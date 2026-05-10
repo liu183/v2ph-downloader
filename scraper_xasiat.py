@@ -53,38 +53,86 @@ def fetch_page(url, retries=MAX_RETRIES):
     return None
 
 
-def send_feishu(webhook_url, title, content_lines, cover_url=None):
-    if not webhook_url:
-        return
-    md_lines = "\n".join(content_lines)
-    if cover_url:
-        md_lines += f"\n\n![封面]({cover_url})"
-    elements = [
-        {"tag": "div", "text": {"tag": "lark_md", "content": md_lines}}
-    ]
-    payload = {
-        "msg_type": "interactive",
-        "card": {
-            "header": {"title": {"tag": "plain_text", "content": title}, "template": "blue"},
-            "elements": elements,
-        }
-    }
+# ── Feishu webhook ──────────────────────────────────────────────
+
+def _feishu_post(webhook_url, payload):
     try:
         resp = requests.post(webhook_url, json=payload, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("code") == 0:
-                print(f"    [Feishu] Sent: {title}")
-            else:
-                print(f"    [Feishu] Error: {data}")
+                return True
+            print(f"    [Feishu] Error: {data}")
         else:
             print(f"    [Feishu] HTTP {resp.status_code}")
     except Exception as e:
         print(f"    [Feishu] Exception: {e}")
+    return False
 
+
+def send_feishu_card(webhook_url, title, content_lines, header_template="blue"):
+    if not webhook_url:
+        return
+    md_lines = "\n".join(content_lines)
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {"title": {"tag": "plain_text", "content": title}, "template": header_template},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": md_lines}}],
+        }
+    }
+    if _feishu_post(webhook_url, payload):
+        print(f"    [Feishu] Card: {title}")
+
+
+def send_feishu_images(webhook_url, title, image_urls, max_show=3):
+    if not webhook_url or not image_urls:
+        return
+    content = []
+    content.append({"tag": "text", "text": f"📷 {title}（共{len(image_urls)}张，展示前{min(max_show, len(image_urls))}张）\n"})
+    for i, img_url in enumerate(image_urls[:max_show]):
+        content.append({"tag": "text", "text": f"\n图片 {i+1}: "})
+        content.append({"tag": "a", "text": "查看原图", "href": img_url})
+        content.append({"tag": "text", "text": "\n"})
+        content.append({"tag": "text", "text": f"{img_url}\n"})
+    payload = {
+        "msg_type": "post",
+        "content": {"post": {"zh_cn": {"title": f"🖼️ {title}", "content": [content]}}}
+    }
+    if _feishu_post(webhook_url, payload):
+        print(f"    [Feishu] Images: {title} ({min(max_show, len(image_urls))} shown)")
+
+
+def send_feishu_album(webhook_url, album_name, badge, dl_count, total, album_url, image_urls):
+    if not webhook_url:
+        return
+    lines = [
+        f"**标记:** {badge}",
+        f"**图片数:** {dl_count}/{total}",
+        f"**链接:** [查看图集]({album_url})",
+    ]
+    send_feishu_card(webhook_url, album_name, lines)
+    if image_urls:
+        time.sleep(0.3)
+        send_feishu_images(webhook_url, album_name, image_urls, max_show=3)
+
+
+def send_feishu_summary(webhook_url, model, albums_info, total_images, total_downloaded, sample_images=None):
+    lines = [f"**模型:** {model}"]
+    lines.append(f"**来源:** xasiat.com")
+    lines.append(f"**图集数:** {len(albums_info)} | **总图片:** {total_images} | **已下载:** {total_downloaded}")
+    lines.append("")
+    for i, (name, badge, imgs, dl) in enumerate(albums_info, 1):
+        lines.append(f"{i}. 【{badge}】{name[:40]} — {dl}/{imgs}张")
+    send_feishu_card(webhook_url, f"✅ xasiat 下载完成: {model}", lines, header_template="green")
+    if sample_images:
+        time.sleep(0.3)
+        send_feishu_images(webhook_url, f"{model} 图集预览", sample_images, max_show=len(sample_images))
+
+
+# ── Scraping ────────────────────────────────────────────────────
 
 def get_albums(model_slug):
-    """Get album list from model page."""
     url = f"{BASE_URL}/albums/models/{model_slug}/"
     print(f"[1/3] Fetching model page: {url}")
     soup = fetch_page(url)
@@ -97,66 +145,45 @@ def get_albums(model_slug):
         link = item.select_one("a[href]")
         title_el = item.select_one("strong.title")
         photos_el = item.select_one("div.photos")
-
         if not link:
             continue
-
         href = link.get("href", "")
         title = title_el.get_text(strip=True) if title_el else ""
         photos = photos_el.get_text(strip=True) if photos_el else ""
         cover_img = item.select_one("img[data-original]")
         cover = cover_img.get("data-original", "") if cover_img else ""
-
-        # Extract album ID from URL: /albums/{id}/{slug}/
         m = re.search(r"/albums/(\d+)/", href)
         album_id = int(m.group(1)) if m else 0
-
         albums.append({
             "url": href if href.startswith("http") else f"{BASE_URL}{href}",
-            "title": title,
-            "photos_text": photos,
-            "album_id": album_id,
-            "cover": cover,
+            "title": title, "photos_text": photos, "album_id": album_id, "cover": cover,
         })
-
     print(f"  Found {len(albums)} albums")
     return albums
 
 
 def get_album_images(album_url):
-    """Get full-size image URLs from an album page."""
     soup = fetch_page(album_url)
     if not soup:
         return []
-
     images = []
     for a_tag in soup.select("div.images a.item[href]"):
         href = a_tag.get("href", "")
         if not href:
             continue
-
-        # Convert proxy URL to direct CDN URL
-        # Proxy: /get_image/2/{hash}/sources/{prefix}/{id}/{photo_id}.jpg/
-        # Direct: pic.xascdn.li/contents/albums/sources/{prefix}/{id}/{photo_id}.jpg
         direct = convert_to_direct_cdn(href)
         if direct:
             images.append(direct)
-
     return images
 
 
 def convert_to_direct_cdn(url):
-    """Convert get_image proxy URL to direct CDN URL."""
-    # Match: /get_image/2/{hash}/sources/{prefix}/{album_id}/{photo_id}.jpg/
     m = re.search(r"/sources/(\d+)/(\d+)/(\d+)\.jpg", url)
     if m:
         prefix, album_id, photo_id = m.groups()
         return f"https://pic.xascdn.li/contents/albums/sources/{prefix}/{album_id}/{photo_id}.jpg"
-
-    # Already a direct CDN URL?
     if "pic.xascdn.li" in url and "/sources/" in url:
         return url.split("?")[0]
-
     return None
 
 
@@ -171,7 +198,6 @@ def sanitize_filename(name, max_len=80):
 def download_images(images, output_dir, album_name):
     album_dir = output_dir / sanitize_filename(album_name)
     album_dir.mkdir(parents=True, exist_ok=True)
-
     downloaded = 0
     for i, img_url in enumerate(images):
         ext = "jpg"
@@ -179,12 +205,10 @@ def download_images(images, output_dir, album_name):
             ext = "png"
         elif ".webp" in img_url:
             ext = "webp"
-
         filepath = album_dir / f"{i+1:04d}.{ext}"
         if filepath.exists():
             downloaded += 1
             continue
-
         for attempt in range(MAX_RETRIES):
             try:
                 resp = requests.get(img_url, headers=HEADERS, timeout=30)
@@ -195,9 +219,7 @@ def download_images(images, output_dir, album_name):
             except requests.RequestException:
                 pass
             time.sleep(1)
-
         time.sleep(DOWNLOAD_DELAY)
-
     return downloaded
 
 
@@ -214,16 +236,15 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     webhook = args.webhook
 
-    # Step 1: Get albums
     albums = get_albums(args.model)
     if not albums:
         sys.exit(1)
 
-    # Step 2: Process each album
     print(f"\n[2/3] Processing {len(albums)} albums...")
     total_downloaded = 0
     total_images = 0
     albums_info = []
+    sample_images = []
 
     for i, album in enumerate(albums):
         time.sleep(REQUEST_DELAY)
@@ -242,35 +263,20 @@ def main():
             dl_count = download_images(images, output, album["title"])
             total_downloaded += dl_count
             print(f"    Downloaded: {dl_count}/{len(images)}")
+            sample_images.append(images[0])
 
         albums_info.append((album["title"], album["photos_text"], len(images), dl_count))
 
-        # Feishu notification per album
         if webhook and not args.list_only:
-            feishu_lines = [
-                f"**图片数:** {dl_count}/{len(images)}",
-                f"**来源:** xasiat.com",
-                f"**链接:** {album['url']}",
-            ]
-            cover = album.get("cover", "") or (images[0] if images else "")
-            send_feishu(webhook, album["title"], feishu_lines, cover_url=cover)
+            send_feishu_album(webhook, album["title"], album["photos_text"], dl_count, len(images), album["url"], images)
 
-    # Summary
     print(f"\n{'='*60}")
     print(f"  Albums: {len(albums)} | Images found: {total_images}")
     if not args.list_only:
         print(f"  Downloaded: {total_downloaded}")
         print(f"  Output: {output.resolve()}")
         if webhook:
-            lines = [
-                f"**模型:** {args.model}",
-                f"**来源:** xasiat.com",
-                f"**图集数:** {len(albums)} | **总图片:** {total_images} | **已下载:** {total_downloaded}",
-                "",
-            ]
-            for j, (name, badge, imgs, dl) in enumerate(albums_info, 1):
-                lines.append(f"{j}. 【{badge}】{name[:40]} — {dl}/{imgs}张")
-            send_feishu(webhook, f"xasiat 下载完成: {args.model}", lines)
+            send_feishu_summary(webhook, args.model, albums_info, total_images, total_downloaded, sample_images)
     else:
         print(f"\n  {'Album':<50} {'Photos':>8} {'Imgs':>5}")
         print(f"  {'-'*65}")

@@ -79,56 +79,102 @@ def fetch_page(session, url, retries=MAX_RETRIES):
 
 # ── Feishu webhook ──────────────────────────────────────────────
 
-def send_feishu(webhook_url, title, content_lines, cover_url=None):
-    """Send a Feishu interactive card message with optional cover image link."""
-    if not webhook_url:
-        return
-
-    # Build markdown content
-    md_lines = "\n".join(content_lines)
-    if cover_url:
-        md_lines += f"\n\n![封面]({cover_url})"
-
-    elements = [
-        {
-            "tag": "div",
-            "text": {"tag": "lark_md", "content": md_lines}
-        }
-    ]
-
-    payload = {
-        "msg_type": "interactive",
-        "card": {
-            "header": {
-                "title": {"tag": "plain_text", "content": title},
-                "template": "blue",
-            },
-            "elements": elements,
-        }
-    }
-
+def _feishu_post(webhook_url, payload):
+    """Post a message to Feishu webhook."""
     try:
         resp = requests.post(webhook_url, json=payload, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("code") == 0:
-                print(f"    [Feishu] Sent: {title}")
-            else:
-                print(f"    [Feishu] Error: {data}")
+                return True
+            print(f"    [Feishu] Error: {data}")
         else:
             print(f"    [Feishu] HTTP {resp.status_code}")
     except Exception as e:
         print(f"    [Feishu] Exception: {e}")
+    return False
 
 
-def send_feishu_summary(webhook_url, actor, albums_info, total_images, total_downloaded):
+def send_feishu_card(webhook_url, title, content_lines, header_template="blue"):
+    """Send a Feishu interactive card message."""
+    if not webhook_url:
+        return
+    md_lines = "\n".join(content_lines)
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {"title": {"tag": "plain_text", "content": title}, "template": header_template},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": md_lines}}],
+        }
+    }
+    if _feishu_post(webhook_url, payload):
+        print(f"    [Feishu] Card: {title}")
+
+
+def send_feishu_images(webhook_url, title, image_urls, max_show=3):
+    """Send album images to Feishu as a rich-text post with inline images.
+
+    Since Feishu webhook requires image_key for img tags, we send image URLs
+    as clickable links in a formatted post. Each image gets its own line.
+    """
+    if not webhook_url or not image_urls:
+        return
+
+    # Build post content with image links
+    content = []
+    content.append({"tag": "text", "text": f"📷 {title}（共{len(image_urls)}张，展示前{min(max_show, len(image_urls))}张）\n"})
+
+    for i, img_url in enumerate(image_urls[:max_show]):
+        content.append({"tag": "text", "text": f"\n图片 {i+1}: "})
+        content.append({"tag": "a", "text": f"查看原图", "href": img_url})
+        content.append({"tag": "text", "text": "\n"})
+        # Also show the URL directly so Feishu may auto-preview it
+        content.append({"tag": "text", "text": f"{img_url}\n"})
+
+    payload = {
+        "msg_type": "post",
+        "content": {"post": {"zh_cn": {"title": f"🖼️ {title}", "content": [content]}}}
+    }
+    if _feishu_post(webhook_url, payload):
+        print(f"    [Feishu] Images: {title} ({min(max_show, len(image_urls))} shown)")
+
+
+def send_feishu_album(webhook_url, album_name, badge, dl_count, total, max_page, album_url, image_urls):
+    """Send complete album notification: card details + image preview."""
+    if not webhook_url:
+        return
+
+    # 1. Send card with album details
+    pages_info = f"{max_page}页" if max_page > 1 else "1页"
+    lines = [
+        f"**标记:** {badge}",
+        f"**图片数:** {dl_count}/{total}",
+        f"**页数:** {pages_info}",
+        f"**链接:** [查看图集]({album_url})",
+    ]
+    if dl_count < total and max_page > 1:
+        lines.append("\n⚠️ 第2页起需登录，仅下载了第1页")
+    send_feishu_card(webhook_url, album_name, lines)
+
+    # 2. Send image preview (first 3 images)
+    if image_urls:
+        time.sleep(0.3)
+        send_feishu_images(webhook_url, album_name, image_urls, max_show=3)
+
+
+def send_feishu_summary(webhook_url, actor, albums_info, total_images, total_downloaded, sample_images=None):
     """Send a summary card to Feishu after all albums are processed."""
     lines = [f"**模特:** {actor}"]
     lines.append(f"**图集数:** {len(albums_info)} | **总图片:** {total_images} | **已下载:** {total_downloaded}")
     lines.append("")
     for i, (name, badge, imgs, pages, dl) in enumerate(albums_info, 1):
         lines.append(f"{i}. 【{badge}】{name[:40]} — {dl}/{imgs}张")
-    send_feishu(webhook_url, f"下载完成: {actor}", lines)
+    send_feishu_card(webhook_url, f"✅ 下载完成: {actor}", lines, header_template="green")
+
+    # Send a preview gallery: 1 image per album
+    if sample_images:
+        time.sleep(0.3)
+        send_feishu_images(webhook_url, f"{actor} 图集预览", sample_images, max_show=len(sample_images))
 
 
 # ── Scraping ────────────────────────────────────────────────────
@@ -142,7 +188,7 @@ def check_cookies(session, webhook_url=""):
         msg = "登录 cookie 已失效！请重新登录 v2ph.com 并更新 GitHub Secret: V2PH_COOKIES"
         print(f"  [EXPIRED] {msg}")
         if webhook_url:
-            send_feishu(webhook_url, "Cookie 已失效", [
+            send_feishu_card(webhook_url, "Cookie 已失效", [
                 "⚠️ **V2PH_COOKIES 已过期**",
                 "",
                 "请重新登录并更新 cookie：",
@@ -313,6 +359,7 @@ def main():
     total_downloaded = 0
     total_images = 0
     albums_info = []
+    sample_images = []  # one cover per album for summary preview
 
     for i, album in enumerate(albums):
         time.sleep(REQUEST_DELAY)
@@ -337,24 +384,19 @@ def main():
             dl_count = download_images(session, images, output, album_name)
             total_downloaded += dl_count
             print(f"    Downloaded: {dl_count}/{len(images)}")
+            sample_images.append(images[0])  # first image as album cover
         else:
             print(f"    No images (may need --cookies for this album)")
 
         albums_info.append((album_name, album["badge"], len(images), max_page, dl_count))
 
-        # Send Feishu notification per album
+        # Send Feishu notification per album: card + image preview
         if webhook and not args.list_only:
             album_url = f"{BASE_URL}{album['path']}"
-            feishu_lines = [
-                f"**标记:** {album['badge']}",
-                f"**图片数:** {dl_count}/{len(images)}",
-                f"**页数:** {max_page}",
-                f"**链接:** {album_url}",
-            ]
-            if dl_count < len(images) and max_page > 1:
-                feishu_lines.append(f"⚠️ 第2页起需登录，仅下载了第1页")
-            cover = images[0] if images else album.get("cover", "")
-            send_feishu(webhook, album_name, feishu_lines, cover_url=cover)
+            send_feishu_album(
+                webhook, album_name, album["badge"],
+                dl_count, len(images), max_page, album_url, images
+            )
 
     # Step 3: Summary
     print(f"\n{'='*60}")
@@ -363,9 +405,9 @@ def main():
         print(f"  Downloaded: {total_downloaded}")
         print(f"  Output: {output.resolve()}")
 
-        # Send summary to Feishu
+        # Send summary to Feishu with preview gallery
         if webhook:
-            send_feishu_summary(webhook, args.actor, albums_info, total_images, total_downloaded)
+            send_feishu_summary(webhook, args.actor, albums_info, total_images, total_downloaded, sample_images)
     else:
         print(f"\n  {'Album':<55} {'Badge':>6} {'Imgs':>5} {'Pages':>6}")
         print(f"  {'-'*75}")
