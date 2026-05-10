@@ -75,8 +75,42 @@ def _wait_for_cloudflare(page, max_wait=15):
     return page.content()
 
 
+def _get_flaresolverr_url():
+    return os.environ.get("FLARESOLVERR_URL", "")
+
+
+def fetch_page_with_flaresolverr(url, retries=2):
+    """Use FlareSolverr to bypass Cloudflare."""
+    fs_url = _get_flaresolverr_url()
+    if not fs_url:
+        return None
+    for attempt in range(retries):
+        try:
+            resp = requests.post(fs_url, json={
+                "cmd": "request.get",
+                "url": url,
+                "maxTimeout": 60000,
+            }, timeout=90)
+            data = resp.json()
+            if data.get("status") == "ok":
+                html = data["solution"]["response"]
+                soup = BeautifulSoup(html, "html.parser")
+                if soup.select("div.mainleft") or soup.select("div.leftp"):
+                    print(f"  [FlareSolverr] Page loaded successfully")
+                    return soup
+                if "challenge" not in html.lower()[:2000]:
+                    return soup
+                print(f"  [FlareSolverr] Got challenge page, retrying...")
+            else:
+                print(f"  [FlareSolverr] Error: {data.get('message', 'unknown')}")
+        except Exception as e:
+            print(f"  [FlareSolverr Error] {e}, retrying...")
+        time.sleep(REQUEST_DELAY * (attempt + 1))
+    return None
+
+
 def fetch_page_with_cloudscraper(url, retries=MAX_RETRIES):
-    """Try cloudscraper first (handles Cloudflare JS challenges)."""
+    """Try cloudscraper (handles Cloudflare JS challenges)."""
     if not _scraper:
         return None
     for attempt in range(retries):
@@ -84,7 +118,6 @@ def fetch_page_with_cloudscraper(url, retries=MAX_RETRIES):
             resp = _scraper.get(url, timeout=30)
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, "html.parser")
-                # Verify we got real content
                 if soup.select("div.mainleft") or soup.select("div.leftp"):
                     return soup
                 if "challenge" not in resp.text.lower()[:2000]:
@@ -275,11 +308,12 @@ def get_albums(keyword):
     encoded = quote(keyword)
     url = f"{BASE_URL}/search/?keyword={encoded}"
     print(f"[1/3] Fetching search page: {url}")
-    # Try cloudscraper first (faster, less resource-intensive)
-    soup = fetch_page_with_cloudscraper(url)
-    if soup:
-        print("  [cloudscraper] Page loaded successfully")
-    else:
+    # Try FlareSolverr → cloudscraper → Playwright
+    soup = fetch_page_with_flaresolverr(url)
+    if not soup:
+        print("  [FlareSolverr] Failed, trying cloudscraper...")
+        soup = fetch_page_with_cloudscraper(url)
+    if not soup:
         print("  [cloudscraper] Failed, falling back to Playwright...")
         soup = fetch_page_with_playwright(url)
     if not soup:
@@ -311,7 +345,7 @@ def get_albums(keyword):
             continue
         full_page_url = page_url if page_url.startswith("http") else f"{BASE_URL}{page_url}"
         time.sleep(REQUEST_DELAY)
-        page_soup = fetch_page_with_cloudscraper(full_page_url) or fetch_page_with_playwright(full_page_url)
+        page_soup = fetch_page_with_flaresolverr(full_page_url) or fetch_page_with_cloudscraper(full_page_url) or fetch_page_with_playwright(full_page_url)
         if not page_soup:
             continue
         for item in page_soup.select("div.mainleft div.leftp"):
@@ -333,7 +367,7 @@ def get_albums(keyword):
 
 def get_album_images(album_url):
     """Get image URLs from an album detail page."""
-    soup = fetch_page_with_cloudscraper(album_url) or fetch_page_with_playwright(album_url)
+    soup = fetch_page_with_flaresolverr(album_url) or fetch_page_with_cloudscraper(album_url) or fetch_page_with_playwright(album_url)
     if not soup:
         return []
 

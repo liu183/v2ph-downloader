@@ -21,6 +21,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,11 +41,25 @@ jobs:
           pip install requests beautifulsoup4 cloudscraper playwright
           python -m playwright install --with-deps chromium
 
+      - name: Wait for FlareSolverr
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:8191/healthz > /dev/null 2>&1; then
+              echo "FlareSolverr is ready"
+              exit 0
+            fi
+            echo "Waiting for FlareSolverr... ($i/30)"
+            sleep 2
+          done
+          echo "FlareSolverr failed to start"
+          exit 1
+
       - name: Run scraper
         env:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FLARESOLVERR_URL: http://localhost:8191/v1
         run: |
           ARGS="--keyword ${{ inputs.keyword }} --output ./downloads/everiaclub-${{ inputs.keyword }}"
 
