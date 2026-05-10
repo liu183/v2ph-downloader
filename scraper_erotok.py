@@ -212,6 +212,9 @@ def get_albums(tag):
             continue
         seen.add(href)
         title = link.get_text(strip=True)
+        # Filter: only include albums whose title contains the keyword
+        if tag not in title:
+            continue
         if href:
             albums.append({
                 "url": href if href.startswith("http") else f"{BASE_URL}{href}",
