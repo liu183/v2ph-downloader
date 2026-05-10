@@ -40,15 +40,57 @@ REQUEST_DELAY = 0.5
 DOWNLOAD_DELAY = 0.2
 MAX_RETRIES = 3
 
+_use_playwright = False
+_pw = None
+_browser = None
+
+
+def _init_playwright():
+    global _use_playwright, _pw, _browser
+    _use_playwright = True
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        os.system(f"{sys.executable} -m pip install playwright")
+        os.system(f"{sys.executable} -m playwright install chromium")
+        from playwright.sync_api import sync_playwright
+    _pw = sync_playwright().start()
+    _browser = _pw.chromium.launch(headless=True)
+
+
+def _close_playwright():
+    global _pw, _browser
+    if _browser:
+        _browser.close()
+    if _pw:
+        _pw.stop()
+
 
 def fetch_page(url, retries=MAX_RETRIES):
     for attempt in range(retries):
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=30)
-            if resp.status_code == 200:
-                return BeautifulSoup(resp.text, "html.parser")
-            print(f"  [{resp.status_code}] Retrying {url}...")
-        except requests.RequestException as e:
+            if _use_playwright and _browser:
+                page = _browser.new_page()
+                page.goto(url, timeout=60000)
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=30000)
+                except Exception:
+                    pass
+                import time as _time
+                _time.sleep(2)
+                html = page.content()
+                page.close()
+                return BeautifulSoup(html, "html.parser")
+            else:
+                resp = requests.get(url, headers=HEADERS, timeout=30)
+                if resp.status_code == 200:
+                    return BeautifulSoup(resp.text, "html.parser")
+                if resp.status_code == 403:
+                    print(f"  [403] Switching to Playwright...")
+                    _init_playwright()
+                    continue
+                print(f"  [{resp.status_code}] Retrying {url}...")
+        except Exception as e:
             print(f"  [Error] {e}, retrying...")
         time.sleep(REQUEST_DELAY * (attempt + 1))
     return None
@@ -375,6 +417,7 @@ def main():
         for name, imgs, _ in albums_info:
             print(f"  {name[:48]:<50} {imgs:>5}")
     print(f"{'='*60}")
+    _close_playwright()
 
 
 if __name__ == "__main__":
