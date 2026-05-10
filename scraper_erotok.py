@@ -31,6 +31,12 @@ except ImportError:
     os.system(f"{sys.executable} -m pip install beautifulsoup4 requests")
     from bs4 import BeautifulSoup
 
+try:
+    import cloudscraper
+    _scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
+except ImportError:
+    _scraper = None
+
 BASE_URL = "https://erotok.com"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -55,7 +61,10 @@ def _init_playwright():
         os.system(f"{sys.executable} -m playwright install chromium")
         from playwright.sync_api import sync_playwright
     _pw = sync_playwright().start()
-    _browser = _pw.chromium.launch(headless=True)
+    _browser = _pw.chromium.launch(
+        headless=True,
+        args=["--disable-blink-features=AutomationControlled"],
+    )
 
 
 def _close_playwright():
@@ -71,18 +80,36 @@ def fetch_page(url, retries=MAX_RETRIES):
         try:
             if _use_playwright and _browser:
                 page = _browser.new_page()
+                page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
                 page.goto(url, timeout=60000)
                 try:
                     page.wait_for_load_state("domcontentloaded", timeout=30000)
                 except Exception:
                     pass
-                import time as _time
-                _time.sleep(2)
-                html = page.content()
+                # Wait for Cloudflare challenge to complete
+                for _ in range(6):
+                    time.sleep(2)
+                    html = page.content()
+                    if "challenge" not in html.lower()[:2000]:
+                        break
+                else:
+                    html = page.content()
                 page.close()
-                return BeautifulSoup(html, "html.parser")
+                soup = BeautifulSoup(html, "html.parser")
+                # Verify we got real content, not a challenge page
+                if soup.select("li.p-postList__item") or soup.select("article"):
+                    return soup
+                if "challenge" in html.lower()[:2000]:
+                    print(f"  [CF] Challenge page persisted, retrying...")
+                    time.sleep(5)
+                    continue
+                return soup
             else:
-                resp = requests.get(url, headers=HEADERS, timeout=30)
+                # Try cloudscraper first
+                if _scraper:
+                    resp = _scraper.get(url, timeout=30)
+                else:
+                    resp = requests.get(url, headers=HEADERS, timeout=30)
                 if resp.status_code == 200:
                     return BeautifulSoup(resp.text, "html.parser")
                 if resp.status_code == 403:

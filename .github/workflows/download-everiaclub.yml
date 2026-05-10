@@ -32,7 +32,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 playwright
+          pip install requests beautifulsoup4 cloudscraper playwright
           python -m playwright install --with-deps chromium
 
       - name: Run scraper

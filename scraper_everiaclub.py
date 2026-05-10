@@ -33,6 +33,12 @@ except ImportError:
     os.system(f"{sys.executable} -m pip install beautifulsoup4 requests")
     from bs4 import BeautifulSoup
 
+try:
+    import cloudscraper
+    _scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
+except ImportError:
+    _scraper = None
+
 BASE_URL = "https://www.everiaclub.com"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -44,7 +50,7 @@ MAX_RETRIES = 3
 
 
 def _get_playwright_browser():
-    """Launch a Playwright browser instance."""
+    """Launch a Playwright browser instance with stealth settings."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -52,8 +58,44 @@ def _get_playwright_browser():
         os.system(f"{sys.executable} -m playwright install chromium")
         from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
-    browser = p.chromium.launch(headless=True)
+    browser = p.chromium.launch(
+        headless=True,
+        args=["--disable-blink-features=AutomationControlled"],
+    )
     return p, browser
+
+
+def _wait_for_cloudflare(page, max_wait=15):
+    """Wait for Cloudflare challenge to complete."""
+    for _ in range(max_wait):
+        time.sleep(2)
+        html = page.content()
+        if "challenge" not in html.lower()[:2000]:
+            return html
+    return page.content()
+
+
+def fetch_page_with_cloudscraper(url, retries=MAX_RETRIES):
+    """Try cloudscraper first (handles Cloudflare JS challenges)."""
+    if not _scraper:
+        return None
+    for attempt in range(retries):
+        try:
+            resp = _scraper.get(url, timeout=30)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                # Verify we got real content
+                if soup.select("div.mainleft") or soup.select("div.leftp"):
+                    return soup
+                if "challenge" not in resp.text.lower()[:2000]:
+                    return soup
+                print(f"  [CF] Got challenge page via cloudscraper, retrying...")
+            else:
+                print(f"  [{resp.status_code}] cloudscraper retrying {url}...")
+        except Exception as e:
+            print(f"  [cloudscraper Error] {e}, retrying...")
+        time.sleep(REQUEST_DELAY * (attempt + 1))
+    return None
 
 
 def fetch_page_with_playwright(url, wait_selector="div.mainleft", timeout=60000):
@@ -61,21 +103,20 @@ def fetch_page_with_playwright(url, wait_selector="div.mainleft", timeout=60000)
     p, browser = _get_playwright_browser()
     try:
         page = browser.new_page()
+        page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
         page.goto(url, timeout=timeout)
-        # Wait for Cloudflare challenge - use domcontentloaded instead of networkidle
         try:
             page.wait_for_load_state("domcontentloaded", timeout=30000)
         except Exception:
             pass
-        # Wait for actual content
+        # Wait for Cloudflare challenge to complete
+        html = _wait_for_cloudflare(page)
+        # Try waiting for actual content
         try:
-            page.wait_for_selector(wait_selector, timeout=30000)
+            page.wait_for_selector(wait_selector, timeout=15000)
+            html = page.content()
         except Exception:
             pass
-        # Extra wait for Cloudflare
-        import time as _time
-        _time.sleep(3)
-        html = page.content()
     finally:
         browser.close()
         p.stop()
@@ -230,11 +271,17 @@ def send_feishu_summary(token, webhook_url, keyword, albums_info, total_images, 
 # ── Scraping ────────────────────────────────────────────────────
 
 def get_albums(keyword):
-    """Get album URLs from search results using Playwright."""
+    """Get album URLs from search results."""
     encoded = quote(keyword)
     url = f"{BASE_URL}/search/?keyword={encoded}"
-    print(f"[1/3] Fetching search page with Playwright: {url}")
-    soup = fetch_page_with_playwright(url)
+    print(f"[1/3] Fetching search page: {url}")
+    # Try cloudscraper first (faster, less resource-intensive)
+    soup = fetch_page_with_cloudscraper(url)
+    if soup:
+        print("  [cloudscraper] Page loaded successfully")
+    else:
+        print("  [cloudscraper] Failed, falling back to Playwright...")
+        soup = fetch_page_with_playwright(url)
     if not soup:
         print("Failed to access search page!")
         return []
@@ -264,7 +311,7 @@ def get_albums(keyword):
             continue
         full_page_url = page_url if page_url.startswith("http") else f"{BASE_URL}{page_url}"
         time.sleep(REQUEST_DELAY)
-        page_soup = fetch_page_with_playwright(full_page_url)
+        page_soup = fetch_page_with_cloudscraper(full_page_url) or fetch_page_with_playwright(full_page_url)
         if not page_soup:
             continue
         for item in page_soup.select("div.mainleft div.leftp"):
@@ -285,8 +332,8 @@ def get_albums(keyword):
 
 
 def get_album_images(album_url):
-    """Get image URLs from an album detail page using Playwright."""
-    soup = fetch_page_with_playwright(album_url)
+    """Get image URLs from an album detail page."""
+    soup = fetch_page_with_cloudscraper(album_url) or fetch_page_with_playwright(album_url)
     if not soup:
         return []
 
@@ -329,51 +376,73 @@ def sanitize_filename(name, max_len=80):
 
 
 def download_images(images, output_dir, album_name):
-    """Download images using Playwright to bypass Cloudflare on CDN."""
+    """Download images, trying cloudscraper first, then Playwright."""
     album_dir = output_dir / sanitize_filename(album_name)
     album_dir.mkdir(parents=True, exist_ok=True)
     downloaded = 0
 
-    p, browser = _get_playwright_browser()
-    try:
-        page = browser.new_page()
-        # Visit the site first to get Cloudflare cookies
-        page.goto(BASE_URL, timeout=60000)
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=30000)
-        except Exception:
-            pass
-        import time as _time
-        _time.sleep(3)
+    # Phase 1: try cloudscraper for all images
+    failed_urls = []
+    for i, img_url in enumerate(images):
+        ext = "jpg"
+        if ".png" in img_url:
+            ext = "png"
+        elif ".webp" in img_url:
+            ext = "webp"
+        elif ".jpeg" in img_url:
+            ext = "jpeg"
+        filepath = album_dir / f"{i+1:04d}.{ext}"
+        if filepath.exists():
+            downloaded += 1
+            continue
 
-        for i, img_url in enumerate(images):
-            ext = "jpg"
-            if ".png" in img_url:
-                ext = "png"
-            elif ".webp" in img_url:
-                ext = "webp"
-            elif ".jpeg" in img_url:
-                ext = "jpeg"
-            filepath = album_dir / f"{i+1:04d}.{ext}"
-            if filepath.exists():
-                downloaded += 1
-                continue
-
+        success = False
+        if _scraper:
             for attempt in range(MAX_RETRIES):
                 try:
-                    resp = page.goto(img_url, timeout=30000)
-                    if resp and resp.status == 200:
-                        body = resp.body()
-                        filepath.write_bytes(body)
+                    resp = _scraper.get(img_url, timeout=30)
+                    if resp.status_code == 200 and len(resp.content) > 1000:
+                        filepath.write_bytes(resp.content)
                         downloaded += 1
+                        success = True
                         break
                 except Exception:
                     pass
                 time.sleep(1)
-            time.sleep(DOWNLOAD_DELAY)
-    finally:
-        browser.close()
-        p.stop()
+
+        if not success:
+            failed_urls.append((i, img_url, filepath))
+        time.sleep(DOWNLOAD_DELAY)
+
+    # Phase 2: use Playwright for failed images
+    if failed_urls:
+        print(f"    [cloudscraper] {downloaded}/{len(images)} downloaded, using Playwright for {len(failed_urls)} remaining...")
+        p, browser = _get_playwright_browser()
+        try:
+            page = browser.new_page()
+            page.goto(BASE_URL, timeout=60000)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+            time.sleep(3)
+
+            for i, img_url, filepath in failed_urls:
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        resp = page.goto(img_url, timeout=30000)
+                        if resp and resp.status == 200:
+                            body = resp.body()
+                            filepath.write_bytes(body)
+                            downloaded += 1
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(1)
+                time.sleep(DOWNLOAD_DELAY)
+        finally:
+            browser.close()
+            p.stop()
 
     return downloaded
 
