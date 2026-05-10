@@ -39,6 +39,8 @@ jobs:
         run: pip install requests beautifulsoup4
 
       - name: Run scraper
+        env:
+          V2PH_COOKIES: ${{ secrets.V2PH_COOKIES }}
         run: |
           ARGS="--actor ${{ inputs.actor }} --output ./downloads/${{ inputs.actor }}"
 
@@ -48,10 +50,6 @@ jobs:
 
           if [ "${{ inputs.list_only }}" = "true" ]; then
             ARGS="$ARGS --list-only"
-          fi
-
-          if [ -n "${{ secrets.V2PH_COOKIES }}" ]; then
-            ARGS="$ARGS --cookies '${{ secrets.V2PH_COOKIES }}'"
           fi
 
           python scraper.py $ARGS

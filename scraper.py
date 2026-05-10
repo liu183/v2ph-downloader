@@ -200,7 +200,8 @@ def download_images(session, images, output_dir, album_name):
 def main():
     parser = argparse.ArgumentParser(description="v2ph album scraper")
     parser.add_argument("--actor", default=DEFAULT_ACTOR, help="Actor slug from URL")
-    parser.add_argument("--cookies", default="", help="Cookie string for authenticated access")
+    parser.add_argument("--cookies", default=os.environ.get("V2PH_COOKIES", ""),
+                        help="Cookie string (or set V2PH_COOKIES env var)")
     parser.add_argument("--output", default="./downloads", help="Output directory")
     parser.add_argument("--full", action="store_true", help="Fetch all pages (requires cookies)")
     parser.add_argument("--list-only", action="store_true", help="Only list albums, don't download")
