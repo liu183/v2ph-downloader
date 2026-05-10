@@ -131,8 +131,19 @@ def main():
         import json
         session_data = json.loads(session_json)
         cl.set_settings(session_data)
-        cl.login(session_data.get("username", ""), session_data.get("password", ""))
-        print(f"Session loaded! Logged in as: {cl.account_info().username}")
+        # Verify session is still valid
+        try:
+            user = cl.account_info()
+            print(f"Session valid! Logged in as: {user.username}")
+        except Exception:
+            # Session expired, re-login with credentials
+            print("Session expired, re-logging in...")
+            if args.username and args.password:
+                cl.login(args.username, args.password)
+                print(f"Re-logged in as: {args.username}")
+            else:
+                print("Error: session expired and no credentials provided")
+                sys.exit(1)
     elif args.username and args.password:
         print(f"\nLogging in as {args.username}...")
         cl.login(args.username, args.password)
