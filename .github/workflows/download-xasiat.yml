@@ -1,0 +1,55 @@
+name: Download xasiat Albums
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model slug (from URL: xasiat.com/albums/models/XXX/)"
+        required: true
+        default: "shirato-hana"
+      list_only:
+        description: "Only list albums, don't download"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run scraper
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          ARGS="--model ${{ inputs.model }} --output ./downloads/xasiat-${{ inputs.model }}"
+
+          if [ "${{ inputs.list_only }}" = "true" ]; then
+            ARGS="$ARGS --list-only"
+          fi
+
+          python scraper_xasiat.py $ARGS
+
+      - name: Upload artifacts
+        if: inputs.list_only == false
+        uses: actions/upload-artifact@v4
+        with:
+          name: xasiat-${{ inputs.model }}-${{ github.run_number }}
+          path: downloads/
+          retention-days: 5
+          if-no-files-found: warn
