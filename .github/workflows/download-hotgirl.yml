@@ -1,6 +1,8 @@
 name: Download hotgirl Albums
 
 on:
+  schedule:
+    - cron: "30 * * * *"
   workflow_dispatch:
     inputs:
       keyword:

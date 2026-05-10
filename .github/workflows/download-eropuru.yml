@@ -1,6 +1,8 @@
 name: Download eropuru Albums
 
 on:
+  schedule:
+    - cron: "50 * * * *"
   workflow_dispatch:
     inputs:
       model_id:

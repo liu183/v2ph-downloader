@@ -1,6 +1,8 @@
 name: Download geinou-nude Albums
 
 on:
+  schedule:
+    - cron: "40 * * * *"
   workflow_dispatch:
     inputs:
       model:
