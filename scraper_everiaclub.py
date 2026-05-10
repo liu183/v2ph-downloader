@@ -56,17 +56,25 @@ def _get_playwright_browser():
     return p, browser
 
 
-def fetch_page_with_playwright(url, wait_selector="div.mainleft", timeout=30000):
+def fetch_page_with_playwright(url, wait_selector="div.mainleft", timeout=60000):
     """Use Playwright to bypass Cloudflare and get page HTML."""
     p, browser = _get_playwright_browser()
     try:
         page = browser.new_page()
         page.goto(url, timeout=timeout)
-        page.wait_for_load_state("networkidle")
+        # Wait for Cloudflare challenge - use domcontentloaded instead of networkidle
         try:
-            page.wait_for_selector(wait_selector, timeout=15000)
+            page.wait_for_load_state("domcontentloaded", timeout=30000)
         except Exception:
             pass
+        # Wait for actual content
+        try:
+            page.wait_for_selector(wait_selector, timeout=30000)
+        except Exception:
+            pass
+        # Extra wait for Cloudflare
+        import time as _time
+        _time.sleep(3)
         html = page.content()
     finally:
         browser.close()
@@ -330,8 +338,13 @@ def download_images(images, output_dir, album_name):
     try:
         page = browser.new_page()
         # Visit the site first to get Cloudflare cookies
-        page.goto(BASE_URL, timeout=30000)
-        page.wait_for_load_state("networkidle")
+        page.goto(BASE_URL, timeout=60000)
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=30000)
+        except Exception:
+            pass
+        import time as _time
+        _time.sleep(3)
 
         for i, img_url in enumerate(images):
             ext = "jpg"
