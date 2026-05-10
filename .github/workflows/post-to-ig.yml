@@ -94,6 +94,7 @@ jobs:
         env:
           IG_USERNAME: ${{ secrets.IG_USERNAME }}
           IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
+          IG_SESSION: ${{ secrets.IG_SESSION }}
         run: |
           ARGS="--input ./downloads --start ${{ inputs.start_album }}"
 

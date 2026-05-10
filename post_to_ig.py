@@ -122,15 +122,24 @@ def main():
         print("\nDry run - not posting.")
         return
 
-    if not args.username or not args.password:
-        print("Error: --username and --password required (or set IG_USERNAME/IG_PASSWORD env vars)")
-        sys.exit(1)
-
-    # Login
-    print(f"\nLogging in as {args.username}...")
+    # Login via session or credentials
+    session_json = os.environ.get("IG_SESSION", "")
     cl = Client()
-    cl.login(args.username, args.password)
-    print("Login OK!")
+
+    if session_json:
+        print("\nLoading session from IG_SESSION env var...")
+        import json
+        session_data = json.loads(session_json)
+        cl.set_settings(session_data)
+        cl.login(session_data.get("username", ""), session_data.get("password", ""))
+        print(f"Session loaded! Logged in as: {cl.account_info().username}")
+    elif args.username and args.password:
+        print(f"\nLogging in as {args.username}...")
+        cl.login(args.username, args.password)
+        print("Login OK!")
+    else:
+        print("Error: need IG_SESSION env var or --username/--password")
+        sys.exit(1)
 
     # Post each album
     posted = 0
