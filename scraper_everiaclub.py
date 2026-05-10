@@ -110,6 +110,33 @@ def fetch_page_with_flaresolverr(url, retries=2):
     return None
 
 
+_flaresolverr_cookies = {}
+
+
+def _init_flaresolverr_cookies():
+    """Get Cloudflare clearance cookies via FlareSolverr for image CDN."""
+    global _flaresolverr_cookies
+    if _flaresolverr_cookies:
+        return _flaresolverr_cookies
+    fs_url = _get_flaresolverr_url()
+    if not fs_url:
+        return {}
+    try:
+        resp = requests.post(fs_url, json={
+            "cmd": "request.get",
+            "url": BASE_URL,
+            "maxTimeout": 60000,
+        }, timeout=90)
+        data = resp.json()
+        if data.get("status") == "ok":
+            for cookie in data.get("solution", {}).get("cookies", []):
+                _flaresolverr_cookies[cookie["name"]] = cookie["value"]
+            print(f"    [FlareSolverr] Got {len(_flaresolverr_cookies)} cookies for CDN")
+    except Exception as e:
+        print(f"    [FlareSolverr] Cookie init error: {e}")
+    return _flaresolverr_cookies
+
+
 def fetch_page_with_cloudscraper(url, retries=MAX_RETRIES):
     """Try cloudscraper (handles Cloudflare JS challenges)."""
     if not _scraper:
@@ -411,12 +438,15 @@ def sanitize_filename(name, max_len=80):
 
 
 def download_images(images, output_dir, album_name):
-    """Download images, trying cloudscraper first, then Playwright."""
+    """Download images: FlareSolverr cookies → cloudscraper → Playwright."""
     album_dir = output_dir / sanitize_filename(album_name)
     album_dir.mkdir(parents=True, exist_ok=True)
     downloaded = 0
 
-    # Phase 1: try cloudscraper for all images
+    # Init FlareSolverr cookies for CDN
+    fs_cookies = _init_flaresolverr_cookies() if _get_flaresolverr_url() else {}
+
+    # Phase 1: try FlareSolverr cookies + requests, then cloudscraper
     failed_urls = []
     for i, img_url in enumerate(images):
         ext = "jpg"
@@ -432,7 +462,22 @@ def download_images(images, output_dir, album_name):
             continue
 
         success = False
-        if _scraper:
+        # Try FlareSolverr cookies + requests first
+        if fs_cookies:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    resp = requests.get(img_url, cookies=fs_cookies, headers=HEADERS, timeout=30)
+                    if resp.status_code == 200 and len(resp.content) > 1000:
+                        filepath.write_bytes(resp.content)
+                        downloaded += 1
+                        success = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+
+        # Fallback to cloudscraper
+        if not success and _scraper:
             for attempt in range(MAX_RETRIES):
                 try:
                     resp = _scraper.get(img_url, timeout=30)
@@ -451,7 +496,7 @@ def download_images(images, output_dir, album_name):
 
     # Phase 2: use Playwright for failed images
     if failed_urls:
-        print(f"    [cloudscraper] {downloaded}/{len(images)} downloaded, using Playwright for {len(failed_urls)} remaining...")
+        print(f"    [{downloaded}/{len(images)}] downloaded, using Playwright for {len(failed_urls)} remaining...")
         p, browser = _get_playwright_browser()
         try:
             page = browser.new_page()
