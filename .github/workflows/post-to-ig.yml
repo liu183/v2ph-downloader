@@ -1,0 +1,91 @@
+name: Post Albums to Instagram
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "GitHub Actions run ID to download images from (leave empty for latest xasiat run)"
+        required: false
+        default: ""
+      source_name:
+        description: "Artifact name pattern (e.g. xasiat-shirato-hana)"
+        required: false
+        default: "xasiat-shirato-hana"
+      start_album:
+        description: "Start from album index (0-based, for resuming)"
+        required: false
+        default: "0"
+      dry_run:
+        description: "Only list albums, don't post"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install instagrapi
+
+      - name: Find source run ID
+        id: find_run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.source_run_id }}" ]; then
+            echo "run_id=${{ inputs.source_run_id }}" >> $GITHUB_OUTPUT
+          else
+            # Find latest completed xasiat run
+            RUN_ID=$(gh run list --workflow=download-xasiat.yml --limit 1 --status completed --json databaseId -q '.[0].databaseId')
+            echo "Latest xasiat run: $RUN_ID"
+            echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download images from source run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Downloading from run ${{ steps.find_run.outputs.run_id }}..."
+          gh run download ${{ steps.find_run.outputs.run_id }} \
+            --name "${{ inputs.source_name }}" \
+            --dir ./downloads
+
+      - name: List downloaded albums
+        run: |
+          echo "Downloaded albums:"
+          find ./downloads -mindepth 1 -maxdepth 2 -type d | head -20
+          echo ""
+          echo "Image counts:"
+          for dir in ./downloads/*/; do
+            if [ -d "$dir" ]; then
+              count=$(find "$dir" -name "*.jpg" -o -name "*.png" -o -name "*.webp" | wc -l)
+              echo "  $(basename "$dir"): $count images"
+            fi
+          done
+
+      - name: Post to Instagram
+        env:
+          IG_USERNAME: ${{ secrets.IG_USERNAME }}
+          IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
+        run: |
+          ARGS="--input ./downloads --start ${{ inputs.start_album }}"
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          python post_to_ig.py $ARGS
