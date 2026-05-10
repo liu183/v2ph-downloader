@@ -56,22 +56,29 @@ def fetch_page(url, retries=MAX_RETRIES):
 def send_feishu(webhook_url, title, content_lines, cover_url=None):
     if not webhook_url:
         return
-    post_content = []
-    for line in content_lines:
-        post_content.append({"tag": "text", "text": line})
-        post_content.append({"tag": "text", "text": "\n"})
+    md_lines = "\n".join(content_lines)
     if cover_url:
-        post_content.append({"tag": "img", "image_key": "", "src": cover_url})
+        md_lines += f"\n\n![封面]({cover_url})"
+    elements = [
+        {"tag": "div", "text": {"tag": "lark_md", "content": md_lines}}
+    ]
     payload = {
-        "msg_type": "post",
-        "content": {"post": {"zh_cn": {"title": title, "content": [post_content]}}}
+        "msg_type": "interactive",
+        "card": {
+            "header": {"title": {"tag": "plain_text", "content": title}, "template": "blue"},
+            "elements": elements,
+        }
     }
     try:
         resp = requests.post(webhook_url, json=payload, timeout=10)
-        if resp.status_code == 200 and resp.json().get("code") == 0:
-            print(f"    [Feishu] Sent: {title}")
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("code") == 0:
+                print(f"    [Feishu] Sent: {title}")
+            else:
+                print(f"    [Feishu] Error: {data}")
         else:
-            print(f"    [Feishu] Error: {resp.text[:100]}")
+            print(f"    [Feishu] HTTP {resp.status_code}")
     except Exception as e:
         print(f"    [Feishu] Exception: {e}")
 

@@ -80,27 +80,30 @@ def fetch_page(session, url, retries=MAX_RETRIES):
 # ── Feishu webhook ──────────────────────────────────────────────
 
 def send_feishu(webhook_url, title, content_lines, cover_url=None):
-    """Send a Feishu rich-text post message with optional cover image."""
+    """Send a Feishu interactive card message with optional cover image link."""
     if not webhook_url:
         return
 
-    # Build post content: text lines + optional image
-    post_content = []
-    for line in content_lines:
-        post_content.append({"tag": "text", "text": line})
-        post_content.append({"tag": "text", "text": "\n"})
+    # Build markdown content
+    md_lines = "\n".join(content_lines)
     if cover_url:
-        post_content.append({"tag": "img", "image_key": "", "src": cover_url})
+        md_lines += f"\n\n![封面]({cover_url})"
+
+    elements = [
+        {
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": md_lines}
+        }
+    ]
 
     payload = {
-        "msg_type": "post",
-        "content": {
-            "post": {
-                "zh_cn": {
-                    "title": title,
-                    "content": [post_content]
-                }
-            }
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": "blue",
+            },
+            "elements": elements,
         }
     }
 
