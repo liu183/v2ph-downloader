@@ -1,0 +1,87 @@
+name: Check Cookie Validity
+
+on:
+  schedule:
+    # Run every Monday at 10:00 UTC (18:00 Beijing time)
+    - cron: "0 10 * * 1"
+  workflow_dispatch:
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Check cookies
+        env:
+          V2PH_COOKIES: ${{ secrets.V2PH_COOKIES }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          python -c "
+          import sys, io, os
+          if sys.platform == 'win32':
+              sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+          import requests
+          from bs4 import BeautifulSoup
+
+          cookies_str = os.environ.get('V2PH_COOKIES', '')
+          webhook_url = os.environ.get('FEISHU_WEBHOOK', '')
+
+          if not cookies_str:
+              print('No cookies configured!')
+              sys.exit(1)
+
+          session = requests.Session()
+          session.headers.update({
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          })
+          for pair in cookies_str.split(';'):
+              pair = pair.strip()
+              if '=' in pair:
+                  k, v = pair.split('=', 1)
+                  session.cookies.set(k.strip(), v.strip())
+
+          # Check
+          session.get('https://www.v2ph.com/', timeout=30)
+          resp = session.get('https://www.v2ph.com/user/index', timeout=30, allow_redirects=False)
+
+          if resp.status_code in (301, 302) and 'login' in resp.headers.get('Location', ''):
+              status = 'EXPIRED'
+              print('Cookies are EXPIRED!')
+              if webhook_url:
+                  requests.post(webhook_url, json={
+                      'msg_type': 'post',
+                      'content': {'post': {'zh_cn': {
+                          'title': '⚠️ V2PH Cookie 已失效',
+                          'content': [[
+                              {'tag': 'text', 'text': '请重新登录并更新 cookie：\n'},
+                              {'tag': 'text', 'text': '1. 浏览器登录 v2ph.com\n'},
+                              {'tag': 'text', 'text': '2. F12 → Application → Cookies\n'},
+                              {'tag': 'text', 'text': '3. gh secret set V2PH_COOKIES\n'},
+                          ]]
+                      }}}
+                  }, timeout=10)
+              sys.exit(1)
+          else:
+              print('Cookies are VALID')
+              if webhook_url:
+                  requests.post(webhook_url, json={
+                      'msg_type': 'text',
+                      'content': {'text': '✅ V2PH Cookie 有效，下载功能正常'}
+                  }, timeout=10)
+          "

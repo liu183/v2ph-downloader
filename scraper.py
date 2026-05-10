@@ -130,6 +130,34 @@ def send_feishu_summary(webhook_url, actor, albums_info, total_images, total_dow
 
 # ── Scraping ────────────────────────────────────────────────────
 
+def check_cookies(session, webhook_url=""):
+    """Check if login cookies are still valid by accessing a page that requires auth."""
+    print("[0/3] Checking cookie validity...")
+    resp = session.get(f"{BASE_URL}/user/index", timeout=30, allow_redirects=False)
+    # If redirected to login page, cookies are expired
+    if resp.status_code in (301, 302) and "login" in resp.headers.get("Location", ""):
+        msg = "登录 cookie 已失效！请重新登录 v2ph.com 并更新 GitHub Secret: V2PH_COOKIES"
+        print(f"  [EXPIRED] {msg}")
+        if webhook_url:
+            send_feishu(webhook_url, "Cookie 已失效", [
+                "⚠️ **V2PH_COOKIES 已过期**",
+                "",
+                "请重新登录并更新 cookie：",
+                "1. 浏览器登录 v2ph.com",
+                "2. F12 → Application → Cookies → 复制全部 cookie",
+                f"3. 更新 GitHub Secret: `gh secret set V2PH_COOKIES`",
+            ])
+        return False
+    # Check if we can access the account page content
+    soup = BeautifulSoup(resp.text, "html.parser")
+    if soup.select_one('a[href*="/user/index"]'):
+        print("  [OK] Cookies are valid")
+        return True
+    # Ambiguous - try an album page 2 to confirm
+    print("  [WARN] Could not confirm, continuing...")
+    return True
+
+
 def get_albums_from_actor(session, actor_slug):
     """Get album page URLs and their badge counts from the actor page."""
     url = f"{BASE_URL}/actor/{actor_slug}"
@@ -267,6 +295,10 @@ def main():
     session = create_session(args.cookies)
     session.get(BASE_URL, timeout=30)
     time.sleep(1)
+
+    # Validate cookies before proceeding
+    if args.cookies:
+        check_cookies(session, webhook)
 
     # Step 1: Get albums
     albums = get_albums_from_actor(session, args.actor)
