@@ -136,29 +136,36 @@ def _feishu_post(webhook_url, payload):
     return False
 
 
-def send_feishu_images(token, webhook_url, title, image_urls, max_show=3):
+def send_feishu_images(token, webhook_url, title, image_urls):
     if not webhook_url or not image_urls:
         return
-    elements = []
-    for i, img_url in enumerate(image_urls[:max_show]):
-        if token:
-            image_key = _feishu_upload_image(token, img_url)
-            if image_key:
-                elements.append({"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": f"图片{i+1}"}})
-                print(f"    [Feishu] Uploaded image {i+1}/{min(max_show, len(image_urls))}")
-                continue
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"图片{i+1}: [查看原图]({img_url})"}})
-    if not elements:
-        return
-    payload = {
-        "msg_type": "interactive",
-        "card": {
-            "header": {"title": {"tag": "plain_text", "content": f"🖼️ {title}"}, "template": "blue"},
-            "elements": elements,
-        }
-    }
-    if _feishu_post(webhook_url, payload):
-        print(f"    [Feishu] Images sent: {title}")
+    total = len(image_urls)
+    # Send in batches to avoid card size limits
+    batch_size = 10
+    for batch_start in range(0, total, batch_size):
+        batch = image_urls[batch_start:batch_start + batch_size]
+        elements = []
+        for i, img_url in enumerate(batch):
+            idx = batch_start + i + 1
+            if token:
+                image_key = _feishu_upload_image(token, img_url)
+                if image_key:
+                    elements.append({"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": f"图片{idx}"}})
+                    print(f"    [Feishu] Uploaded {idx}/{total}")
+                    continue
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"图片{idx}: [查看原图]({img_url})"}})
+        if elements:
+            batch_title = f"🖼️ {title} ({batch_start+1}-{min(batch_start+batch_size, total)}/{total})" if total > batch_size else f"🖼️ {title}"
+            payload = {
+                "msg_type": "interactive",
+                "card": {
+                    "header": {"title": {"tag": "plain_text", "content": batch_title}, "template": "blue"},
+                    "elements": elements,
+                }
+            }
+            _feishu_post(webhook_url, payload)
+            time.sleep(0.5)
+    print(f"    [Feishu] All {total} images sent: {title}")
 
 
 def send_feishu_album(token, webhook_url, album_name, badge, dl_count, total, max_page, album_url, image_urls):
@@ -183,7 +190,7 @@ def send_feishu_album(token, webhook_url, album_name, badge, dl_count, total, ma
     _feishu_post(webhook_url, payload)
     if image_urls:
         time.sleep(0.3)
-        send_feishu_images(token, webhook_url, album_name, image_urls, max_show=3)
+        send_feishu_images(token, webhook_url, album_name, image_urls)
 
 
 def send_feishu_summary(token, webhook_url, actor, albums_info, total_images, total_downloaded, sample_images=None):
@@ -204,7 +211,7 @@ def send_feishu_summary(token, webhook_url, actor, albums_info, total_images, to
     _feishu_post(webhook_url, payload)
     if token and sample_images:
         time.sleep(0.3)
-        send_feishu_images(token, webhook_url, f"{actor} 图集预览", sample_images, max_show=len(sample_images))
+        send_feishu_images(token, webhook_url, f"{actor} 图集预览", sample_images)
 
 
 # ── Scraping ────────────────────────────────────────────────────
