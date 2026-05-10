@@ -41,6 +41,7 @@ jobs:
       - name: Run scraper
         env:
           V2PH_COOKIES: ${{ secrets.V2PH_COOKIES }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
         run: |
           ARGS="--actor ${{ inputs.actor }} --output ./downloads/${{ inputs.actor }}"
 

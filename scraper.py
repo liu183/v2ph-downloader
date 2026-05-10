@@ -15,6 +15,7 @@ Page structure:
 
 import argparse
 import io
+import json
 import os
 import re
 import sys
@@ -76,6 +77,59 @@ def fetch_page(session, url, retries=MAX_RETRIES):
     return None
 
 
+# ── Feishu webhook ──────────────────────────────────────────────
+
+def send_feishu(webhook_url, title, content_lines, cover_url=None):
+    """Send a Feishu rich-text post message with optional cover image."""
+    if not webhook_url:
+        return
+
+    # Build post content: text lines + optional image
+    post_content = []
+    for line in content_lines:
+        post_content.append({"tag": "text", "text": line})
+        post_content.append({"tag": "text", "text": "\n"})
+    if cover_url:
+        post_content.append({"tag": "img", "image_key": "", "src": cover_url})
+
+    payload = {
+        "msg_type": "post",
+        "content": {
+            "post": {
+                "zh_cn": {
+                    "title": title,
+                    "content": [post_content]
+                }
+            }
+        }
+    }
+
+    try:
+        resp = requests.post(webhook_url, json=payload, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("code") == 0:
+                print(f"    [Feishu] Sent: {title}")
+            else:
+                print(f"    [Feishu] Error: {data}")
+        else:
+            print(f"    [Feishu] HTTP {resp.status_code}")
+    except Exception as e:
+        print(f"    [Feishu] Exception: {e}")
+
+
+def send_feishu_summary(webhook_url, actor, albums_info, total_images, total_downloaded):
+    """Send a summary card to Feishu after all albums are processed."""
+    lines = [f"**模特:** {actor}"]
+    lines.append(f"**图集数:** {len(albums_info)} | **总图片:** {total_images} | **已下载:** {total_downloaded}")
+    lines.append("")
+    for i, (name, badge, imgs, pages, dl) in enumerate(albums_info, 1):
+        lines.append(f"{i}. 【{badge}】{name[:40]} — {dl}/{imgs}张")
+    send_feishu(webhook_url, f"下载完成: {actor}", lines)
+
+
+# ── Scraping ────────────────────────────────────────────────────
+
 def get_albums_from_actor(session, actor_slug):
     """Get album page URLs and their badge counts from the actor page."""
     url = f"{BASE_URL}/actor/{actor_slug}"
@@ -85,7 +139,6 @@ def get_albums_from_actor(session, actor_slug):
         print("Failed to access actor page!")
         return []
 
-    # Albums are in .albums-list, each child div is one album card
     al = soup.select_one(".albums-list")
     if not al:
         print("No .albums-list found on actor page!")
@@ -97,6 +150,7 @@ def get_albums_from_actor(session, actor_slug):
         link = child.select_one('a[href*="/album/"]')
         badge_el = child.select_one(".badge")
         title_el = child.select_one(".media-meta, .card-body")
+        img_el = child.select_one("img[data-src]")
 
         if not link:
             continue
@@ -108,7 +162,8 @@ def get_albums_from_actor(session, actor_slug):
 
         badge = badge_el.get_text(strip=True) if badge_el else ""
         title = title_el.get_text(strip=True) if title_el else ""
-        albums.append({"path": href, "badge": badge, "title": title})
+        cover = img_el.get("data-src", "") if img_el else ""
+        albums.append({"path": href, "badge": badge, "title": title, "cover": cover})
 
     print(f"  Found {len(albums)} albums")
     return albums
@@ -121,25 +176,21 @@ def get_album_images(session, album_path, use_pagination=False):
     if not soup:
         return [], "", 0
 
-    # Get title from h1
     title_el = soup.select_one("h1")
     title = title_el.get_text(strip=True) if title_el else ""
 
-    # Get images from page 1
     images = []
     for img in soup.select("img[data-src]"):
         src = img.get("data-src", "")
         if "cdn.v2ph.com" in src:
             images.append(src)
 
-    # Check pagination
     max_page = 1
     for a in soup.select('a[href*="page="]'):
         m = re.search(r"page=(\d+)", a.get("href", ""))
         if m:
             max_page = max(max_page, int(m.group(1)))
 
-    # Fetch additional pages if requested
     if use_pagination and max_page > 1:
         for page in range(2, max_page + 1):
             time.sleep(REQUEST_DELAY)
@@ -205,16 +256,19 @@ def main():
     parser.add_argument("--output", default="./downloads", help="Output directory")
     parser.add_argument("--full", action="store_true", help="Fetch all pages (requires cookies)")
     parser.add_argument("--list-only", action="store_true", help="Only list albums, don't download")
+    parser.add_argument("--webhook", default=os.environ.get("FEISHU_WEBHOOK", ""),
+                        help="Feishu webhook URL (or set FEISHU_WEBHOOK env var)")
     args = parser.parse_args()
 
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
+    webhook = args.webhook
 
     session = create_session(args.cookies)
-    session.get(BASE_URL, timeout=30)  # warm up cookies
+    session.get(BASE_URL, timeout=30)
     time.sleep(1)
 
-    # Step 1: Get albums from actor page
+    # Step 1: Get albums
     albums = get_albums_from_actor(session, args.actor)
     if not albums:
         sys.exit(1)
@@ -223,7 +277,7 @@ def main():
     print(f"\n[2/3] Processing {len(albums)} albums...")
     total_downloaded = 0
     total_images = 0
-    summary = []
+    albums_info = []
 
     for i, album in enumerate(albums):
         time.sleep(REQUEST_DELAY)
@@ -239,26 +293,48 @@ def main():
         print(f"    {album_name[:70]}")
 
         if args.list_only:
-            summary.append((album_name, album["badge"], len(images), max_page))
+            albums_info.append((album_name, album["badge"], len(images), max_page, 0))
             continue
 
+        # Download
+        dl_count = 0
         if images:
-            count = download_images(session, images, output, album_name)
-            total_downloaded += count
-            print(f"    Downloaded: {count}/{len(images)}")
+            dl_count = download_images(session, images, output, album_name)
+            total_downloaded += dl_count
+            print(f"    Downloaded: {dl_count}/{len(images)}")
         else:
             print(f"    No images (may need --cookies for this album)")
 
-    # Summary
+        albums_info.append((album_name, album["badge"], len(images), max_page, dl_count))
+
+        # Send Feishu notification per album
+        if webhook and not args.list_only:
+            album_url = f"{BASE_URL}{album['path']}"
+            feishu_lines = [
+                f"**标记:** {album['badge']}",
+                f"**图片数:** {dl_count}/{len(images)}",
+                f"**页数:** {max_page}",
+                f"**链接:** {album_url}",
+            ]
+            if dl_count < len(images) and max_page > 1:
+                feishu_lines.append(f"⚠️ 第2页起需登录，仅下载了第1页")
+            cover = images[0] if images else album.get("cover", "")
+            send_feishu(webhook, album_name, feishu_lines, cover_url=cover)
+
+    # Step 3: Summary
     print(f"\n{'='*60}")
     print(f"  Albums: {len(albums)} | Images found: {total_images}")
     if not args.list_only:
         print(f"  Downloaded: {total_downloaded}")
         print(f"  Output: {output.resolve()}")
+
+        # Send summary to Feishu
+        if webhook:
+            send_feishu_summary(webhook, args.actor, albums_info, total_images, total_downloaded)
     else:
         print(f"\n  {'Album':<55} {'Badge':>6} {'Imgs':>5} {'Pages':>6}")
         print(f"  {'-'*75}")
-        for name, badge, imgs, pages in summary:
+        for name, badge, imgs, pages, _ in albums_info:
             print(f"  {name[:53]:<55} {badge:>6} {imgs:>5} {pages:>6}")
     print(f"{'='*60}")
 
