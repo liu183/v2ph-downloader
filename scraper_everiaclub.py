@@ -43,28 +43,34 @@ DOWNLOAD_DELAY = 0.2
 MAX_RETRIES = 3
 
 
-def fetch_page_with_playwright(url, wait_selector="div.mainleft", timeout=30000):
-    """Use Playwright to bypass Cloudflare and get page HTML."""
+def _get_playwright_browser():
+    """Launch a Playwright browser instance."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         os.system(f"{sys.executable} -m pip install playwright")
         os.system(f"{sys.executable} -m playwright install chromium")
         from playwright.sync_api import sync_playwright
+    p = sync_playwright().start()
+    browser = p.chromium.launch(headless=True)
+    return p, browser
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+
+def fetch_page_with_playwright(url, wait_selector="div.mainleft", timeout=30000):
+    """Use Playwright to bypass Cloudflare and get page HTML."""
+    p, browser = _get_playwright_browser()
+    try:
         page = browser.new_page()
         page.goto(url, timeout=timeout)
-        # Wait for Cloudflare challenge to complete
         page.wait_for_load_state("networkidle")
-        # Wait for actual content
         try:
             page.wait_for_selector(wait_selector, timeout=15000)
         except Exception:
             pass
         html = page.content()
+    finally:
         browser.close()
+        p.stop()
     return BeautifulSoup(html, "html.parser")
 
 
@@ -315,32 +321,47 @@ def sanitize_filename(name, max_len=80):
 
 
 def download_images(images, output_dir, album_name):
+    """Download images using Playwright to bypass Cloudflare on CDN."""
     album_dir = output_dir / sanitize_filename(album_name)
     album_dir.mkdir(parents=True, exist_ok=True)
     downloaded = 0
-    for i, img_url in enumerate(images):
-        ext = "jpg"
-        if ".png" in img_url:
-            ext = "png"
-        elif ".webp" in img_url:
-            ext = "webp"
-        elif ".jpeg" in img_url:
-            ext = "jpeg"
-        filepath = album_dir / f"{i+1:04d}.{ext}"
-        if filepath.exists():
-            downloaded += 1
-            continue
-        for attempt in range(MAX_RETRIES):
-            try:
-                resp = requests.get(img_url, headers=HEADERS, timeout=30)
-                if resp.status_code == 200:
-                    filepath.write_bytes(resp.content)
-                    downloaded += 1
-                    break
-            except requests.RequestException:
-                pass
-            time.sleep(1)
-        time.sleep(DOWNLOAD_DELAY)
+
+    p, browser = _get_playwright_browser()
+    try:
+        page = browser.new_page()
+        # Visit the site first to get Cloudflare cookies
+        page.goto(BASE_URL, timeout=30000)
+        page.wait_for_load_state("networkidle")
+
+        for i, img_url in enumerate(images):
+            ext = "jpg"
+            if ".png" in img_url:
+                ext = "png"
+            elif ".webp" in img_url:
+                ext = "webp"
+            elif ".jpeg" in img_url:
+                ext = "jpeg"
+            filepath = album_dir / f"{i+1:04d}.{ext}"
+            if filepath.exists():
+                downloaded += 1
+                continue
+
+            for attempt in range(MAX_RETRIES):
+                try:
+                    resp = page.goto(img_url, timeout=30000)
+                    if resp and resp.status == 200:
+                        body = resp.body()
+                        filepath.write_bytes(body)
+                        downloaded += 1
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+            time.sleep(DOWNLOAD_DELAY)
+    finally:
+        browser.close()
+        p.stop()
+
     return downloaded
 
 
