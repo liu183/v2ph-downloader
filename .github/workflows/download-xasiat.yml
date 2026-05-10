@@ -38,7 +38,6 @@ jobs:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
         run: |
           ARGS="--model ${{ inputs.model }} --output ./downloads/xasiat-${{ inputs.model }}"
 

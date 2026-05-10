@@ -55,7 +55,7 @@ def fetch_page(url, retries=MAX_RETRIES):
     return None
 
 
-# ── Feishu Open API (image upload + send) ───────────────────────
+# ── Feishu: upload via Open API, send via webhook ───────────────
 
 _feishu_token_cache = {"token": None, "expires": 0}
 
@@ -98,89 +98,87 @@ def _feishu_upload_image(token, image_url):
     return None
 
 
-def _feishu_send(token, chat_id, msg_type, content, retry_auth=True):
+def _feishu_post(webhook_url, payload):
     try:
-        resp = requests.post(
-            f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"receive_id": chat_id, "msg_type": msg_type, "content": json.dumps(content)},
-            timeout=15)
-        data = resp.json()
-        if data.get("code") == 0:
-            return True
-        if data.get("code") == 99991663 and retry_auth:
-            _feishu_token_cache["token"] = None
-            new_token = _get_tenant_token(os.environ.get("FEISHU_APP_ID", ""), os.environ.get("FEISHU_APP_SECRET", ""))
-            if new_token:
-                return _feishu_send(new_token, chat_id, msg_type, content, retry_auth=False)
-        print(f"    [Feishu] Send error: {data}")
+        resp = requests.post(webhook_url, json=payload, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("code") == 0:
+                return True
+            print(f"    [Feishu] Error: {data}")
+        else:
+            print(f"    [Feishu] HTTP {resp.status_code}")
     except Exception as e:
-        print(f"    [Feishu] Send exception: {e}")
+        print(f"    [Feishu] Exception: {e}")
     return False
 
 
-def send_feishu_images(token, chat_id, title, image_urls, max_show=3):
-    if not token or not chat_id or not image_urls:
+def send_feishu_images(token, webhook_url, title, image_urls, max_show=3):
+    if not webhook_url or not image_urls:
         return
-    content = [[{"tag": "text", "text": f"📷 {title}（共{len(image_urls)}张，展示前{min(max_show, len(image_urls))}张）\n"}]]
+    elements = []
     for i, img_url in enumerate(image_urls[:max_show]):
-        image_key = _feishu_upload_image(token, img_url)
-        if image_key:
-            content.append([{"tag": "img", "image_key": image_key, "width": 800, "height": 600}])
-            print(f"    [Feishu] Uploaded image {i+1}/{min(max_show, len(image_urls))}")
-        else:
-            content.append([{"tag": "text", "text": f"图片{i+1}上传失败: {img_url}\n"}])
-        time.sleep(0.3)
-    post = {"zh_cn": {"title": f"🖼️ {title}", "content": content}}
-    if _feishu_send(token, chat_id, "post", post):
+        if token:
+            image_key = _feishu_upload_image(token, img_url)
+            if image_key:
+                elements.append({"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": f"图片{i+1}"}})
+                print(f"    [Feishu] Uploaded image {i+1}/{min(max_show, len(image_urls))}")
+                continue
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"图片{i+1}: [查看原图]({img_url})"}})
+    if not elements:
+        return
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {"title": {"tag": "plain_text", "content": f"🖼️ {title}"}, "template": "blue"},
+            "elements": elements,
+        }
+    }
+    if _feishu_post(webhook_url, payload):
         print(f"    [Feishu] Images sent: {title}")
 
 
-def send_feishu_album(token, chat_id, webhook_url, album_name, badge, dl_count, total, album_url, image_urls):
-    if webhook_url:
-        lines = [
-            f"**标记:** {badge}",
-            f"**图片数:** {dl_count}/{total}",
-            f"**链接:** [查看图集]({album_url})",
-        ]
-        payload = {
-            "msg_type": "interactive",
-            "card": {
-                "header": {"title": {"tag": "plain_text", "content": album_name}, "template": "blue"},
-                "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
-            }
+def send_feishu_album(token, webhook_url, album_name, badge, dl_count, total, album_url, image_urls):
+    if not webhook_url:
+        return
+    lines = [
+        f"**标记:** {badge}",
+        f"**图片数:** {dl_count}/{total}",
+        f"**链接:** [查看图集]({album_url})",
+    ]
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {"title": {"tag": "plain_text", "content": album_name}, "template": "blue"},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
         }
-        try:
-            requests.post(webhook_url, json=payload, timeout=10)
-        except Exception:
-            pass
-    if token and image_urls:
+    }
+    _feishu_post(webhook_url, payload)
+    if image_urls:
         time.sleep(0.3)
-        send_feishu_images(token, chat_id, album_name, image_urls, max_show=3)
+        send_feishu_images(token, webhook_url, album_name, image_urls, max_show=3)
 
 
-def send_feishu_summary(token, chat_id, webhook_url, model, albums_info, total_images, total_downloaded, sample_images=None):
-    if webhook_url:
-        lines = [f"**模型:** {model}"]
-        lines.append(f"**来源:** xasiat.com")
-        lines.append(f"**图集数:** {len(albums_info)} | **总图片:** {total_images} | **已下载:** {total_downloaded}")
-        lines.append("")
-        for i, (name, badge, imgs, dl) in enumerate(albums_info, 1):
-            lines.append(f"{i}. 【{badge}】{name[:40]} — {dl}/{imgs}张")
-        payload = {
-            "msg_type": "interactive",
-            "card": {
-                "header": {"title": {"tag": "plain_text", "content": f"✅ xasiat 下载完成: {model}"}, "template": "green"},
-                "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
-            }
+def send_feishu_summary(token, webhook_url, model, albums_info, total_images, total_downloaded, sample_images=None):
+    if not webhook_url:
+        return
+    lines = [f"**模型:** {model}"]
+    lines.append(f"**来源:** xasiat.com")
+    lines.append(f"**图集数:** {len(albums_info)} | **总图片:** {total_images} | **已下载:** {total_downloaded}")
+    lines.append("")
+    for i, (name, badge, imgs, dl) in enumerate(albums_info, 1):
+        lines.append(f"{i}. 【{badge}】{name[:40]} — {dl}/{imgs}张")
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {"title": {"tag": "plain_text", "content": f"✅ xasiat 下载完成: {model}"}, "template": "green"},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
         }
-        try:
-            requests.post(webhook_url, json=payload, timeout=10)
-        except Exception:
-            pass
+    }
+    _feishu_post(webhook_url, payload)
     if token and sample_images:
         time.sleep(0.3)
-        send_feishu_images(token, chat_id, f"{model} 图集预览", sample_images, max_show=len(sample_images))
+        send_feishu_images(token, webhook_url, f"{model} 图集预览", sample_images, max_show=len(sample_images))
 
 
 # ── Scraping ────────────────────────────────────────────────────
@@ -291,7 +289,6 @@ def main():
 
     feishu_app_id = os.environ.get("FEISHU_APP_ID", "")
     feishu_app_secret = os.environ.get("FEISHU_APP_SECRET", "")
-    feishu_chat_id = os.environ.get("FEISHU_CHAT_ID", "")
     feishu_token = _get_tenant_token(feishu_app_id, feishu_app_secret) if feishu_app_id else None
 
     albums = get_albums(args.model)
@@ -326,15 +323,15 @@ def main():
         albums_info.append((album["title"], album["photos_text"], len(images), dl_count))
 
         if not args.list_only:
-            send_feishu_album(feishu_token, feishu_chat_id, webhook, album["title"], album["photos_text"], dl_count, len(images), album["url"], images)
+            send_feishu_album(feishu_token, webhook, album["title"], album["photos_text"], dl_count, len(images), album["url"], images)
 
     print(f"\n{'='*60}")
     print(f"  Albums: {len(albums)} | Images found: {total_images}")
     if not args.list_only:
         print(f"  Downloaded: {total_downloaded}")
         print(f"  Output: {output.resolve()}")
-        if webhook or feishu_token:
-            send_feishu_summary(feishu_token, feishu_chat_id, webhook, args.model, albums_info, total_images, total_downloaded, sample_images)
+        if webhook:
+            send_feishu_summary(feishu_token, webhook, args.model, albums_info, total_images, total_downloaded, sample_images)
     else:
         print(f"\n  {'Album':<50} {'Photos':>8} {'Imgs':>5}")
         print(f"  {'-'*65}")
