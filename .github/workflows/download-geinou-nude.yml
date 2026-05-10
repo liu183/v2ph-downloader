@@ -39,7 +39,7 @@ jobs:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
-          ARGS="--model '${{ inputs.model }}' --output ./downloads/geinou-nude-${{ inputs.model }}"
+          ARGS="--model ${{ inputs.model }} --output ./downloads/geinou-nude-${{ inputs.model }}"
 
           if [ "${{ inputs.list_only }}" = "true" ]; then
             ARGS="$ARGS --list-only"
