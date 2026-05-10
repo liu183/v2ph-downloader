@@ -345,11 +345,27 @@ def download_images(images, output_dir, album_name):
     return downloaded
 
 
+def load_manifest(path):
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_manifest(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description="hotgirl.asia album scraper")
     parser.add_argument("--keyword", default="shirato-hana", help="Search keyword or tag slug")
     parser.add_argument("--output", default="./downloads", help="Output directory")
     parser.add_argument("--list-only", action="store_true", help="Only list albums")
+    parser.add_argument("--incremental", action="store_true", help="Skip already downloaded albums")
+    parser.add_argument("--manifest", default="", help="Manifest file path for incremental mode")
     parser.add_argument("--webhook", default=os.environ.get("FEISHU_WEBHOOK", ""),
                         help="Feishu webhook URL (or set FEISHU_WEBHOOK env var)")
     args = parser.parse_args()
@@ -357,6 +373,9 @@ def main():
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     webhook = args.webhook
+
+    manifest_path = Path(args.manifest) if args.manifest else Path(f"manifests/hotgirl_{sanitize_filename(args.keyword)}.json")
+    manifest = load_manifest(manifest_path) if args.incremental else {}
 
     feishu_app_id = os.environ.get("FEISHU_APP_ID", "")
     feishu_app_secret = os.environ.get("FEISHU_APP_SECRET", "")
@@ -370,6 +389,16 @@ def main():
 
     if not albums:
         sys.exit(1)
+
+    if args.incremental:
+        new_albums = [a for a in albums if a["url"] not in manifest]
+        skipped = len(albums) - len(new_albums)
+        if skipped:
+            print(f"  [Incremental] Skipping {skipped} already downloaded albums")
+        albums = new_albums
+        if not albums:
+            print("  [Incremental] No new albums to download")
+            return
 
     print(f"\n[2/3] Processing {len(albums)} albums...")
     total_downloaded = 0
@@ -404,6 +433,11 @@ def main():
 
         if not args.list_only:
             send_feishu_album(feishu_token, webhook, album["title"], dl_count, len(images), album["url"], images)
+            manifest[album["url"]] = {"title": album["title"], "images": len(images), "downloaded": dl_count}
+
+    if args.incremental and manifest:
+        save_manifest(manifest_path, manifest)
+        print(f"  [Manifest] Saved to {manifest_path}")
 
     print(f"\n{'='*60}")
     print(f"  Albums: {len(albums)} | Images found: {total_images}")

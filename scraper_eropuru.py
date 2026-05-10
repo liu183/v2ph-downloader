@@ -13,6 +13,7 @@ Images from img09.eropuru.com CDN. No auth required. No Cloudflare.
 
 import argparse
 import io
+import json
 import os
 import re
 import sys
@@ -273,11 +274,27 @@ def download_images(images, output_dir, album_name):
     return downloaded
 
 
+def load_manifest(path):
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_manifest(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description="eropuru.com album scraper")
     parser.add_argument("--model-id", default="41602", help="Model page ID (from URL: /zyoyu/ID.html)")
     parser.add_argument("--output", default="./downloads", help="Output directory")
     parser.add_argument("--list-only", action="store_true", help="Only list images, don't download")
+    parser.add_argument("--incremental", action="store_true", help="Skip if already downloaded")
+    parser.add_argument("--manifest", default="", help="Manifest file path for incremental mode")
     parser.add_argument("--webhook", default=os.environ.get("FEISHU_WEBHOOK", ""),
                         help="Feishu webhook URL (or set FEISHU_WEBHOOK env var)")
     args = parser.parse_args()
@@ -285,6 +302,16 @@ def main():
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     webhook = args.webhook
+
+    manifest_path = Path(args.manifest) if args.manifest else Path(f"manifests/eropuru_{args.model_id}.json")
+    manifest = load_manifest(manifest_path) if args.incremental else {}
+
+    model_url = f"{BASE_URL}/zyoyu/{args.model_id}.html"
+    if args.incremental and model_url in manifest:
+        prev = manifest[model_url]
+        print(f"  [Incremental] Already downloaded: {prev.get('images', '?')} images")
+        print(f"  [Incremental] Use --no-incremental to force re-download")
+        return
 
     feishu_app_id = os.environ.get("FEISHU_APP_ID", "")
     feishu_app_secret = os.environ.get("FEISHU_APP_SECRET", "")
@@ -312,6 +339,11 @@ def main():
         send_feishu_album(feishu_token, webhook, f"eropuru-{args.model_id}", dl_count, len(images),
                           f"{BASE_URL}/zyoyu/{args.model_id}.html", images[:10])
         send_feishu_summary(feishu_token, webhook, args.model_id, len(images), dl_count, images[:3])
+
+    if args.incremental:
+        manifest[model_url] = {"model_id": args.model_id, "images": len(images), "downloaded": dl_count}
+        save_manifest(manifest_path, manifest)
+        print(f"  [Manifest] Saved to {manifest_path}")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ WordPress site. Images from wp-content/uploads. No auth required. No Cloudflare.
 
 import argparse
 import io
+import json
 import os
 import re
 import sys
@@ -255,11 +256,27 @@ def download_images(images, output_dir, album_name):
     return downloaded
 
 
+def load_manifest(path):
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_manifest(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description="geinou-nude.com album scraper")
     parser.add_argument("--model", default="白桃はな", help="Model name (from URL)")
     parser.add_argument("--output", default="./downloads", help="Output directory")
     parser.add_argument("--list-only", action="store_true", help="Only list images")
+    parser.add_argument("--incremental", action="store_true", help="Skip if already downloaded")
+    parser.add_argument("--manifest", default="", help="Manifest file path for incremental mode")
     parser.add_argument("--webhook", default=os.environ.get("FEISHU_WEBHOOK", ""),
                         help="Feishu webhook URL (or set FEISHU_WEBHOOK env var)")
     args = parser.parse_args()
@@ -267,6 +284,16 @@ def main():
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     webhook = args.webhook
+
+    manifest_path = Path(args.manifest) if args.manifest else Path(f"manifests/geinou_nude_{sanitize_filename(args.model)}.json")
+    manifest = load_manifest(manifest_path) if args.incremental else {}
+
+    model_url = f"{BASE_URL}/{quote(args.model)}/"
+    if args.incremental and model_url in manifest:
+        prev = manifest[model_url]
+        print(f"  [Incremental] Already downloaded: {prev.get('images', '?')} images")
+        print(f"  [Incremental] Use --no-incremental to force re-download")
+        return
 
     feishu_app_id = os.environ.get("FEISHU_APP_ID", "")
     feishu_app_secret = os.environ.get("FEISHU_APP_SECRET", "")
@@ -293,6 +320,11 @@ def main():
         send_feishu_album(feishu_token, webhook, f"geinou-nude-{args.model}", dl_count, len(images),
                           f"{BASE_URL}/{encoded}/", images[:10])
         send_feishu_summary(feishu_token, webhook, args.model, len(images), dl_count, images[:3])
+
+    if args.incremental:
+        manifest[model_url] = {"model": args.model, "images": len(images), "downloaded": dl_count}
+        save_manifest(manifest_path, manifest)
+        print(f"  [Manifest] Saved to {manifest_path}")
 
 
 if __name__ == "__main__":
