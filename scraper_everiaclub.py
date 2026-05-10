@@ -1,6 +1,8 @@
 """
 everiaclub.com album scraper - downloads all photos matching a keyword.
 
+Uses Playwright to bypass Cloudflare protection.
+
 Usage:
     python scraper_everiaclub.py [--keyword KEYWORD] [--output DIR]
 
@@ -8,7 +10,7 @@ Examples:
     python scraper_everiaclub.py --keyword 白桃はな
     python scraper_everiaclub.py --keyword "Hana Shirato" --output ./downloads
 
-Images use lazy-loading (data-original). No auth required. No Cloudflare.
+Images use lazy-loading (data-original). No auth required.
 """
 
 import argparse
@@ -41,7 +43,33 @@ DOWNLOAD_DELAY = 0.2
 MAX_RETRIES = 3
 
 
-def fetch_page(url, retries=MAX_RETRIES):
+def fetch_page_with_playwright(url, wait_selector="div.mainleft", timeout=30000):
+    """Use Playwright to bypass Cloudflare and get page HTML."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        os.system(f"{sys.executable} -m pip install playwright")
+        os.system(f"{sys.executable} -m playwright install chromium")
+        from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(url, timeout=timeout)
+        # Wait for Cloudflare challenge to complete
+        page.wait_for_load_state("networkidle")
+        # Wait for actual content
+        try:
+            page.wait_for_selector(wait_selector, timeout=15000)
+        except Exception:
+            pass
+        html = page.content()
+        browser.close()
+    return BeautifulSoup(html, "html.parser")
+
+
+def fetch_page_simple(url, retries=MAX_RETRIES):
+    """Simple HTTP fetch (for non-Cloudflare pages)."""
     for attempt in range(retries):
         try:
             resp = requests.get(url, headers=HEADERS, timeout=30)
@@ -188,11 +216,11 @@ def send_feishu_summary(token, webhook_url, keyword, albums_info, total_images, 
 # ── Scraping ────────────────────────────────────────────────────
 
 def get_albums(keyword):
-    """Get album URLs from search results."""
+    """Get album URLs from search results using Playwright."""
     encoded = quote(keyword)
     url = f"{BASE_URL}/search/?keyword={encoded}"
-    print(f"[1/3] Fetching search page: {url}")
-    soup = fetch_page(url)
+    print(f"[1/3] Fetching search page with Playwright: {url}")
+    soup = fetch_page_with_playwright(url)
     if not soup:
         print("Failed to access search page!")
         return []
@@ -222,7 +250,7 @@ def get_albums(keyword):
             continue
         full_page_url = page_url if page_url.startswith("http") else f"{BASE_URL}{page_url}"
         time.sleep(REQUEST_DELAY)
-        page_soup = fetch_page(full_page_url)
+        page_soup = fetch_page_with_playwright(full_page_url)
         if not page_soup:
             continue
         for item in page_soup.select("div.mainleft div.leftp"):
@@ -243,14 +271,14 @@ def get_albums(keyword):
 
 
 def get_album_images(album_url):
-    """Get image URLs from an album detail page."""
-    soup = fetch_page(album_url)
+    """Get image URLs from an album detail page using Playwright."""
+    soup = fetch_page_with_playwright(album_url)
     if not soup:
         return []
 
     images = []
-    # Skip ad containers: p.sk, div.sk-desktop, div.sk-mobile
-    for img in soup.select("div.mainleft img.lazy"):
+    # Skip ad containers
+    for img in soup.select("div.mainleft img"):
         # Skip if inside ad container
         parent = img.parent
         skip = False
@@ -265,12 +293,11 @@ def get_album_images(album_url):
             continue
 
         # Use data-original for lazy-loaded images
-        src = img.get("data-original") or img.get("src", "")
+        src = img.get("data-original") or img.get("data-src") or img.get("src", "")
         if not src or src.startswith("data:") or "/static/loading" in src:
             continue
         if not src.startswith("http"):
             src = f"{BASE_URL}{src}"
-        # Skip thumbnails (listing page thumbnails are 440px)
         if "avatar" in src or "icon" in src or "logo" in src:
             continue
         if src not in images:

@@ -199,11 +199,18 @@ def get_albums(tag):
         return []
 
     albums = []
-    for article in soup.select("article"):
-        link = article.select_one("h2 a[href], h3 a[href], .post-title a[href]")
+    seen = set()
+    for item in soup.select("li.p-postList__item"):
+        link = item.select_one("a[href*='/archives/']")
         if not link:
             continue
         href = link.get("href", "")
+        if not href or href in seen:
+            continue
+        # Skip category/tag links
+        if "/category/" in href or "/tag/" in href:
+            continue
+        seen.add(href)
         title = link.get_text(strip=True)
         if href:
             albums.append({
@@ -226,40 +233,38 @@ def get_album_images(album_url):
         if not soup:
             break
 
-        # Extract images from post content - try lazy-load first, then src
+        # Extract images from post content
         content = soup.select_one("div.post_content, div.entry-content, div.article-content, .post-body")
         if not content:
             content = soup  # fallback to whole page
 
         found_on_page = 0
         for img in content.select("img"):
+            # Prefer data-src (lazy load), fall back to src
             src = img.get("data-src") or img.get("data-lazy-src") or img.get("src", "")
-            if not src or "avatar" in src or "icon" in src or "logo" in src:
+            if not src or src.startswith("data:"):
                 continue
-            if src.startswith("data:"):
+            # Skip non-content images
+            skip_patterns = ["avatar", "icon", "logo", "nukistagram", "/thumbnail/",
+                             "-150x150", "-100x100", "-300x", "ad-", "banner"]
+            if any(x in src.lower() for x in skip_patterns):
                 continue
             if not src.startswith("http"):
                 src = f"{BASE_URL}{src}"
-            # Skip thumbnails - look for full-size patterns
-            if any(x in src for x in ["/thumbnail/", "-150x150", "-100x100", "-300x"]):
-                continue
             if src not in images:
                 images.append(src)
                 found_on_page += 1
 
         # Check for next page
-        next_page = soup.select_one('a.post-page-numbers[href$="/{}"]'.format(page + 1))
-        if not next_page:
-            # Also check for pagination links
-            pagination = soup.select("div.c-pagination a.post-page-numbers, .page-numbers")
-            has_next = False
-            for p in pagination:
-                href = p.get("href", "")
-                if f"/{page + 1}" in href:
-                    has_next = True
-                    break
-            if not has_next:
+        pagination = soup.select("div.c-pagination a.post-page-numbers, .page-numbers")
+        has_next = False
+        for p in pagination:
+            href = p.get("href", "")
+            if f"/{page + 1}" in href:
+                has_next = True
                 break
+        if not has_next:
+            break
 
         page += 1
         time.sleep(REQUEST_DELAY)
