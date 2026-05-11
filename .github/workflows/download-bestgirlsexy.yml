@@ -45,10 +45,11 @@ jobs:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
-          ARGS="--tag ${{ inputs.tag }} --output ./downloads/bestgirlsexy-${{ inputs.tag }} --incremental"
+          TAG="${{ inputs.tag || 'shirato-hana' }}"
+          ARGS="--tag $TAG --output ./downloads/bestgirlsexy-$TAG --incremental"
 
-          if [ "${{ inputs.tag_id }}" != "0" ]; then
-            ARGS="$ARGS --tag-id ${{ inputs.tag_id }}"
+          if [ "${{ inputs.tag_id || '0' }}" != "0" ]; then
+            ARGS="$ARGS --tag-id ${{ inputs.tag_id || '0' }}"
           fi
 
           if [ "${{ inputs.list_only }}" = "true" ]; then

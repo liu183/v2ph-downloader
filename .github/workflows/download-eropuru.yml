@@ -41,7 +41,8 @@ jobs:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
-          ARGS="--model-id ${{ inputs.model_id }} --output ./downloads/eropuru-${{ inputs.model_id }} --incremental"
+          MID="${{ inputs.model_id || '41602' }}"
+          ARGS="--model-id $MID --output ./downloads/eropuru-$MID --incremental"
 
           if [ "${{ inputs.list_only }}" = "true" ]; then
             ARGS="$ARGS --list-only"

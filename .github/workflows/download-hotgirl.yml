@@ -41,7 +41,8 @@ jobs:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
-          ARGS="--keyword ${{ inputs.keyword }} --output ./downloads/hotgirl-${{ inputs.keyword }} --incremental"
+          KW="${{ inputs.keyword || 'shirato-hana' }}"
+          ARGS="--keyword $KW --output ./downloads/hotgirl-$KW --incremental"
 
           if [ "${{ inputs.list_only }}" = "true" ]; then
             ARGS="$ARGS --list-only"
