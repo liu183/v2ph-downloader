@@ -64,5 +64,6 @@ jobs:
           else
             new_files=$(git diff --cached --name-only --diff-filter=A | wc -l)
             git commit -m "geinou-nude: +${new_files} images [skip ci]"
+            git pull --rebase
             git push
           fi
