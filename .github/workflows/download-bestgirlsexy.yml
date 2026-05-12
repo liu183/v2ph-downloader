@@ -25,6 +25,8 @@ env:
 jobs:
   download:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 60
 
     steps:
@@ -69,6 +71,7 @@ jobs:
 
       - name: Commit manifest
         if: inputs.list_only == false
+        continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
