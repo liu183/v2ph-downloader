@@ -1,0 +1,94 @@
+name: Send Downloads to Feishu
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Look back N hours for artifacts"
+        required: false
+        default: "2"
+  workflow_run:
+    workflows:
+      - "Download erotok Albums"
+      - "Download bestgirlsexy Albums"
+      - "Download everiaclub Albums"
+      - "Download hotgirl Albums"
+      - "Download geinou-nude Albums"
+      - "Download eropuru Albums"
+    types:
+      - completed
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Only run if the triggering workflow succeeded, or if manually triggered
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Download artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p artifacts
+          HOURS="${{ inputs.hours || '2' }}"
+
+          echo "Looking for artifacts from the last ${HOURS} hours..."
+
+          # Get recent workflow runs
+          gh api repos/${{ github.repository }}/actions/runs \
+            --jq ".workflow_runs[] | select(.conclusion == 'success' and .created_at > \"$(date -u -d \"${HOURS} hours ago\" +%Y-%m-%dT%H:%M:%SZ)\") | .id" \
+            | while read run_id; do
+              echo "Checking run $run_id..."
+              gh api repos/${{ github.repository }}/actions/runs/$run_id/artifacts \
+                --jq '.artifacts[] | select(.expired == false) | "\(.id) \(.name)"' \
+                | while read artifact_id artifact_name; do
+                  echo "  Downloading: $artifact_name (id=$artifact_id)"
+                  mkdir -p "artifacts/$artifact_name"
+                  gh api repos/${{ github.repository }}/actions/artifacts/$artifact_id/zip > /tmp/artifact.zip 2>/dev/null
+                  unzip -o /tmp/artifact.zip -d "artifacts/$artifact_name" 2>/dev/null || true
+                done
+            done
+
+          echo "Downloaded artifacts:"
+          find artifacts -type f -name "*.jpg" -o -name "*.png" -o -name "*.jpeg" -o -name "*.webp" | wc -l
+          echo "image files found"
+
+      - name: Send to Feishu
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+        run: |
+          # Send each album directory to Feishu
+          for site_dir in artifacts/*/; do
+            [ -d "$site_dir" ] || continue
+            site_name=$(basename "$site_dir")
+
+            # Check if there are image files
+            img_count=$(find "$site_dir" -type f \( -name "*.jpg" -o -name "*.png" -o -name "*.jpeg" -o -name "*.webp" \) | wc -l)
+            if [ "$img_count" -eq 0 ]; then
+              echo "No images in $site_name, skipping"
+              continue
+            fi
+
+            echo "Sending $site_name ($img_count images)..."
+            python send_feishu.py --input "$site_dir" --source "$site_name"
+            sleep 2
+          done
