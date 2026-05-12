@@ -25,9 +25,9 @@ env:
 jobs:
   download:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
-    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -48,7 +48,7 @@ jobs:
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
           TAG="${{ inputs.tag || 'shirato-hana' }}"
-          ARGS="--tag $TAG --output ./downloads/bestgirlsexy-$TAG --incremental"
+          ARGS="--tag $TAG --output ./images/bestgirlsexy --incremental"
 
           if [ "${{ inputs.tag_id || '0' }}" != "0" ]; then
             ARGS="$ARGS --tag-id ${{ inputs.tag_id || '0' }}"
@@ -60,25 +60,17 @@ jobs:
 
           python scraper_bestgirlsexy.py $ARGS
 
-      - name: Upload artifacts
-        if: inputs.list_only == false
-        uses: actions/upload-artifact@v4
-        with:
-          name: bestgirlsexy-${{ inputs.tag }}-${{ github.run_number }}
-          path: downloads/
-          retention-days: 5
-          if-no-files-found: warn
-
-      - name: Commit manifest
+      - name: Commit images and manifest
         if: inputs.list_only == false
         continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add manifests/ || true
+          git add images/bestgirlsexy/ manifests/ || true
           if git diff --cached --quiet; then
-            echo "No manifest changes to commit"
+            echo "No new images to commit"
           else
-            git commit -m "Update manifest: bestgirlsexy ${{ inputs.tag }} [skip ci]"
+            new_files=$(git diff --cached --name-only --diff-filter=A | wc -l)
+            git commit -m "bestgirlsexy: +${new_files} images [skip ci]"
             git push
           fi

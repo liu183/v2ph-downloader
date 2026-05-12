@@ -46,7 +46,7 @@ jobs:
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
           TAG="${{ inputs.tag || '白桃はな' }}"
-          ARGS="--tag $TAG --output ./downloads/erotok-$TAG --incremental"
+          ARGS="--tag $TAG --output ./images/erotok --incremental"
 
           if [ "${{ inputs.list_only }}" = "true" ]; then
             ARGS="$ARGS --list-only"
@@ -54,25 +54,17 @@ jobs:
 
           python scraper_erotok.py $ARGS
 
-      - name: Upload artifacts
-        if: inputs.list_only == false
-        uses: actions/upload-artifact@v4
-        with:
-          name: erotok-${{ inputs.tag }}-${{ github.run_number }}
-          path: downloads/
-          retention-days: 5
-          if-no-files-found: warn
-
-      - name: Commit manifest
+      - name: Commit images and manifest
         if: inputs.list_only == false
         continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add manifests/ || true
+          git add images/erotok/ manifests/ || true
           if git diff --cached --quiet; then
-            echo "No manifest changes to commit"
+            echo "No new images to commit"
           else
-            git commit -m "Update manifest: erotok ${{ inputs.tag }} [skip ci]"
+            new_files=$(git diff --cached --name-only --diff-filter=A | wc -l)
+            git commit -m "erotok: +${new_files} images [skip ci]"
             git push
           fi
