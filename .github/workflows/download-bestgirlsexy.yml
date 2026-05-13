@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      force_redownload:
+        description: "Force re-download (skip incremental)"
+        required: false
+        type: boolean
+        default: false
 
 env:
   PYTHONIOENCODING: utf-8
@@ -48,7 +53,11 @@ jobs:
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
           TAG="${{ inputs.tag || 'shirato-hana' }}"
-          ARGS="--tag $TAG --output ./images/bestgirlsexy --incremental"
+          ARGS="--tag $TAG --output ./images/bestgirlsexy"
+
+          if [ "${{ inputs.force_redownload }}" != "true" ]; then
+            ARGS="$ARGS --incremental"
+          fi
 
           if [ "${{ inputs.tag_id || '0' }}" != "0" ]; then
             ARGS="$ARGS --tag-id ${{ inputs.tag_id || '0' }}"

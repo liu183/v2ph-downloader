@@ -14,6 +14,11 @@ on:
         required: false
         type: boolean
         default: false
+      force_redownload:
+        description: "Force re-download (skip incremental)"
+        required: false
+        type: boolean
+        default: false
 
 env:
   PYTHONIOENCODING: utf-8
@@ -66,7 +71,11 @@ jobs:
           FLARESOLVERR_URL: http://localhost:8191/v1
         run: |
           KW="${{ inputs.keyword || '白桃はな' }}"
-          ARGS="--keyword $KW --output ./images/everiaclub --incremental"
+          ARGS="--keyword $KW --output ./images/everiaclub"
+
+          if [ "${{ inputs.force_redownload }}" != "true" ]; then
+            ARGS="$ARGS --incremental"
+          fi
 
           if [ "${{ inputs.list_only }}" = "true" ]; then
             ARGS="$ARGS --list-only"

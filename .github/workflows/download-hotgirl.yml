@@ -14,6 +14,11 @@ on:
         required: false
         type: boolean
         default: false
+      force_redownload:
+        description: "Force re-download (skip incremental)"
+        required: false
+        type: boolean
+        default: false
 
 env:
   PYTHONIOENCODING: utf-8
@@ -44,7 +49,11 @@ jobs:
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
           KW="${{ inputs.keyword || 'shirato-hana' }}"
-          ARGS="--keyword $KW --output ./images/hotgirl --incremental"
+          ARGS="--keyword $KW --output ./images/hotgirl"
+
+          if [ "${{ inputs.force_redownload }}" != "true" ]; then
+            ARGS="$ARGS --incremental"
+          fi
 
           if [ "${{ inputs.list_only }}" = "true" ]; then
             ARGS="$ARGS --list-only"
