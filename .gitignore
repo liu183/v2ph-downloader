@@ -2,3 +2,4 @@ downloads/
 test-downloads/
 __pycache__/
 *.pyc
+.feishu_sent_state.json

@@ -135,6 +135,46 @@ def find_images(directory):
     return images
 
 
+SENT_STATE_FILE = Path(__file__).parent / ".feishu_sent_state.json"
+
+
+def _load_sent_state():
+    if SENT_STATE_FILE.exists():
+        try:
+            import json
+            with open(SENT_STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+
+def _save_sent_state(state):
+    import json
+    with open(SENT_STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def filter_unsent_images(images, site_key):
+    """Filter out images that have already been sent. Returns (unsent_list, total_sent_count)."""
+    state = _load_sent_state()
+    sent_set = set(state.get(site_key, []))
+    unsent = [img for img in images if os.path.basename(img) not in sent_set]
+    return unsent, len(sent_set)
+
+
+def mark_images_sent(images, site_key):
+    """Mark images as sent in the state file."""
+    state = _load_sent_state()
+    sent_list = state.get(site_key, [])
+    for img in images:
+        name = os.path.basename(img)
+        if name not in sent_list:
+            sent_list.append(name)
+    state[site_key] = sent_list
+    _save_sent_state(state)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Send images to Feishu")
     parser.add_argument("--input", required=True, help="Input directory with images")
@@ -143,6 +183,7 @@ def main():
     parser.add_argument("--webhook", default=os.environ.get("FEISHU_WEBHOOK", ""),
                         help="Feishu webhook URL")
     parser.add_argument("--batch-size", type=int, default=10, help="Images per batch")
+    parser.add_argument("--max-images", type=int, default=100, help="Max images to send per run")
     args = parser.parse_args()
 
     webhook = args.webhook
@@ -159,35 +200,55 @@ def main():
     feishu_app_secret = os.environ.get("FEISHU_APP_SECRET", "")
     feishu_token = _get_tenant_token(feishu_app_id, feishu_app_secret) if feishu_app_id else None
 
+    max_images = args.max_images
+    total_sent = 0
+    site_key = args.source or input_dir.name
+
     # Find all album subdirectories
     album_dirs = sorted([d for d in input_dir.iterdir() if d.is_dir()])
     if not album_dirs:
         # Maybe images are directly in the input dir
-        images = find_images(input_dir)
-        if images:
+        all_images = find_images(input_dir)
+        if all_images:
+            unsent, already = filter_unsent_images(all_images, site_key)
+            to_send = unsent[:max_images]
+            if not to_send:
+                print(f"All {len(all_images)} images already sent, skipping")
+                return
             title = args.title or input_dir.name
-            print(f"Sending {len(images)} images: {title}")
-            send_album_summary(webhook, title, len(images), args.source)
+            print(f"Sending {len(to_send)} images (unsent: {len(unsent)}, already sent: {already}): {title}")
+            send_album_summary(webhook, title, len(all_images), args.source)
             time.sleep(0.5)
-            send_album_images(feishu_token, webhook, title, images)
+            send_album_images(feishu_token, webhook, title, to_send)
+            mark_images_sent(to_send, site_key)
+            total_sent += len(to_send)
         else:
             print("No images found")
+        print(f"\nTotal: {total_sent} images sent this run (limit: {max_images})")
         return
 
-    total_sent = 0
     for album_dir in album_dirs:
-        images = find_images(album_dir)
-        if not images:
+        if total_sent >= max_images:
+            break
+        all_images = find_images(album_dir)
+        if not all_images:
             continue
+        unsent, already = filter_unsent_images(all_images, site_key + "/" + album_dir.name)
+        if not unsent:
+            print(f"Album {album_dir.name}: all {len(all_images)} already sent, skipping")
+            continue
+        remaining = max_images - total_sent
+        to_send = unsent[:remaining]
         title = args.title or album_dir.name
-        print(f"\nSending album: {title} ({len(images)} images)")
-        send_album_summary(webhook, title, len(images), args.source)
+        print(f"\nSending album: {title} ({len(to_send)}/{len(unsent)} unsent images)")
+        send_album_summary(webhook, title, len(all_images), args.source)
         time.sleep(0.5)
-        send_album_images(feishu_token, webhook, title, images)
-        total_sent += len(images)
+        send_album_images(feishu_token, webhook, title, to_send)
+        mark_images_sent(to_send, site_key + "/" + album_dir.name)
+        total_sent += len(to_send)
         time.sleep(1)  # Rate limiting between albums
 
-    print(f"\nTotal: {total_sent} images sent across {len(album_dirs)} albums")
+    print(f"\nTotal: {total_sent} images sent this run (limit: {max_images})")
 
 
 if __name__ == "__main__":
