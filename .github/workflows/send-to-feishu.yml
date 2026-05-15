@@ -1,22 +1,16 @@
 name: Send Downloads to Feishu
 
 on:
+  schedule:
+    # 每天 3 次 (UTC): 01:15, 09:15, 17:15
+    # 对应北京时间: 09:15, 17:15, 次日 01:15
+    - cron: "15 1,9,17 * * *"
   workflow_dispatch:
     inputs:
       sites:
         description: "Sites to send (comma-separated, or 'all')"
         required: false
         default: "all"
-  workflow_run:
-    workflows:
-      - "Download erotok Albums"
-      - "Download bestgirlsexy Albums"
-      - "Download everiaclub Albums"
-      - "Download hotgirl Albums"
-      - "Download geinou-nude Albums"
-      - "Download eropuru Albums"
-    types:
-      - completed
 
 env:
   PYTHONIOENCODING: utf-8
@@ -25,9 +19,6 @@ jobs:
   send:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
 
     steps:
       - name: Checkout
